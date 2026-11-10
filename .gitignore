@@ -3,3 +3,7 @@
 *.log
 nohup.out
 /vendor/
+config.local.php
+
+# Private host settings
+config.local.php

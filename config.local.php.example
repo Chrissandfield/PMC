@@ -1,0 +1,12 @@
+<?php
+// Copy this file to config.local.php ON THE SERVER ONLY and fill in the password.
+// config.local.php is ignored by git: never commit it, never paste its contents into chat or email.
+return [
+    'db_dsn'  => 'mysql:host=localhost;dbname=pic_219d1_schema;charset=utf8mb4',
+    'db_user' => 'pic_219d1_user',
+    'db_pass' => 'PUT-THE-DATABASE-PASSWORD-HERE',
+    'app_url' => 'https://pic.219design.co.uk',
+    // Added later, when Stripe is connected:
+    'stripe_secret'         => '',
+    'stripe_webhook_secret' => '',
+];

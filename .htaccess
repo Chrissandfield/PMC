@@ -1,0 +1,7 @@
+# If the domain points at the repository root, send every request into public/
+# so that src/, db/, bin/, tests/ and config files can never be downloaded.
+Options -Indexes
+RewriteEngine On
+RewriteRule ^$ public/ [L]
+RewriteCond %{REQUEST_URI} !^/public/
+RewriteRule ^(.*)$ public/$1 [L]

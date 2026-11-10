@@ -6,12 +6,12 @@ declare(strict_types=1);
  * Model: each club has its own Express connected account. Customers pay the club directly
  * (a "direct charge"). Stripe takes its card fee from the club, and PlayMoreCricket's commission
  * is added as an application fee. The secret key and webhook secret live in environment
- * variables on the host (PMC_STRIPE_SECRET, PMC_STRIPE_WEBHOOK_SECRET), never in the code.
+ * variables on the host (PMC_STRIPE_SECRET, PMC_STRIPE_WEBHOOK_SECRET, or config.local.php on the server), never in the code.
  */
 
 function stripe_secret(): string
 {
-    $k = getenv('PMC_STRIPE_SECRET') ?: '';
+    $k = $GLOBALS['cfg']['stripe_secret'] ?? '';
     if ($k === '') { throw new RuntimeException('Stripe secret key is not set.'); }
     return $k;
 }

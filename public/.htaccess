@@ -1,0 +1,6 @@
+# Send every request that is not a real file to the app (Apache).
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [L]
+Options -Indexes
