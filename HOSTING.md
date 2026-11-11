@@ -19,6 +19,7 @@ Set the document root of `pic.219design.co.uk` to the **`public`** folder inside
 If it can't be changed, tell us and we will add a root rewrite instead.
 
 ## 2. Private settings
+(The host now sets the database password as an environment variable, so `config.local.php` is optional.)
 Copy `config.local.example.php` to `config.local.php` (same folder as `config.php`) and fill in
 the real database name, user and password. That file is ignored by git and must never be committed.
 Environment variables also work instead: `PMC_DB_DSN`, `PMC_DB_USER`, `PMC_DB_PASS`, `PMC_APP_URL`.
@@ -31,7 +32,10 @@ Import them once, in that order, into an empty database. Do not re-import over l
 Needs MySQL 8.0.16+ or MariaDB 10.5+ (for CHECK constraints and the stored generated column).
 Please tell us the exact version shown on the phpMyAdmin home page.
 
-### 3b. Database updates (no SQL needed)
+### 3b. Database updates (automatic, no SQL needed)
+When a deploy brings new files in `db/migrations/`, the site applies them itself on the next page visit
+(it takes a lock, runs each file once, logs it in `schema_migrations` and `audit_log`, and never stops
+the site if one fails; the error goes to the server error log). Set `PMC_AUTO_MIGRATE=0` to turn that off.
 Later database changes live in `db/migrations/` and are applied from the site itself: an administrator
 opens `/admin` and clicks **Apply updates**. If the database was imported before 11 Nov 2026 that button
 adds coach availability and a second guard so a coach cannot hold two bookings in the same hour.

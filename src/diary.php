@@ -146,7 +146,7 @@ function staff_book(array $user, array $club, array $net, string $localStart, ar
            trim((string) ($in['customer_phone'] ?? '')) ?: null, $junior ? 1 : 0, $junior ? 1 : 0,
            $junior ? $childName : null, $junior ? $childAge : null, $note !== '' ? $note : null, $price, $user['id']]);
     } catch (PDOException $e) {
-        if (is_unique_violation($e)) { return [false, 'Someone has just booked that hour. Pick another.']; }
+        if (is_unique_violation($e)) { return [false, 'That hour has just been BOOKED by someone else. Please pick another.']; }
         throw $e;
     }
     audit((int) $user['id'], 'booking_created', $ref . ' ' . $localStart . ' ' . $type);

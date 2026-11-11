@@ -44,7 +44,7 @@ jake,s,loc=login('jake@test.local'); ok(loc=='/club/penshurst-park','club contac
 s,loc=book(jake,slot(10),type='nonmember',customer_name='Sam Smith',customer_email='sam@x.com',customer_phone='07000')
 ok(s==303 and 'start=' not in (loc or ''),'club contact books non-member hour'); print('   ',flash_of(jake))
 ok(psql(f"select price_pence||','||status from bookings where customer_name='Sam Smith'")=='1000,confirmed','price £10 and confirmed')
-s,h,_=req(anon,f'/club/penshurst-park?week={wk}'); ok('Sam Smith' not in h and 'Booked' in h,'public sees Booked, not the name')
+s,h,_=req(anon,f'/club/penshurst-park?week={wk}'); ok('Sam Smith' not in h and 'BOOKED' in h,'public sees Booked, not the name')
 s,h,_=req(jake,f'/club/penshurst-park?week={wk}'); ok('Sam Smith' in h and 'Release' in h,'staff sees the name and Release')
 
 s,loc=book(jake,slot(10),type='member',customer_name='Dupe'); ok('start=' in (loc or ''),'double-booking refused'); print('   ',flash_of(jake,loc))

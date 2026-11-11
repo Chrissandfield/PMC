@@ -27,3 +27,5 @@ require __DIR__ . '/view.php';
 require __DIR__ . '/auth.php';
 require __DIR__ . '/diary.php';
 require __DIR__ . '/migrate.php';
+
+auto_migrate();

@@ -272,7 +272,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release)?$#', $path, $m)) {
             if (isset($bk[$key])) {
                 $x = $bk[$key];
                 $label = $staff ? h(($x['booking_type'] === 'blocked' ? 'Blocked' : ($x['customer_name'] ?: ucfirst($x['booking_type'])))
-                          . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'Booked';
+                          . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'BOOKED';
                 $canRel = $staff && ($manager || ($mine && (int) $x['coach_id'] === (int) $mine['id']));
                 $b .= '<td class="taken">' . $label;
                 if ($canRel && !$past) {

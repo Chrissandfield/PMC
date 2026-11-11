@@ -63,3 +63,30 @@ function run_migrations(): array
     }
     return [$applied, null];
 }
+
+/**
+ * Keep the database in step with the code: when a deploy brings new files in db/migrations/, apply
+ * them automatically on the next request. Migrations are additive and tolerate being run twice.
+ * Set PMC_AUTO_MIGRATE=0 to turn this off.
+ */
+function auto_migrate(): void
+{
+    if (getenv('PMC_AUTO_MIGRATE') === '0') { return; }
+    try {
+        ensure_migrations_table();
+        $files = glob(migrations_dir() . '/*.sql') ?: [];
+        $done = (int) q('SELECT COUNT(*) AS n FROM schema_migrations')->fetch()['n'];
+        if (count($files) <= $done) { return; }                 // the usual case: nothing new, one cheap query
+        $mysql = db()->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+        if ($mysql && !(int) q('SELECT GET_LOCK(?, 5) AS l', ['pmc_migrate'])->fetch()['l']) { return; }   // another request is already doing it
+        try {
+            [$applied, $err] = run_migrations();
+            if ($err) { error_log('PMC auto-migrate stopped: ' . $err); }
+            elseif ($applied) { audit(null, 'auto_migrated', implode(',', $applied)); }
+        } finally {
+            if ($mysql) { q('SELECT RELEASE_LOCK(?)', ['pmc_migrate']); }
+        }
+    } catch (Throwable $e) {
+        error_log('PMC auto-migrate failed: ' . $e->getMessage());   // never take the site down because of this
+    }
+}
