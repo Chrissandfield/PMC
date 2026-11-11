@@ -90,7 +90,27 @@ added by the administrator from `/admin`. No command line is needed.
 - HTTPS works with no browser warnings.
 - A page that does not exist shows "That page does not exist", not a server error.
 
+## 7. Online payments (Stripe) and emails
+Settings (environment variables, or the same names in `config.local.php`):
+- `PMC_STRIPE_SECRET`: the Stripe secret key (`sk_test_...` for testing, `sk_live_...` when live).
+- `PMC_STRIPE_WEBHOOK_SECRET`: the signing secret (`whsec_...`) of the webhook below.
+- `PMC_APP_SECRET`: any long random string (32+ characters). It signs the links in customers' emails.
+  Changing it later breaks old email links, so set it once.
+- `PMC_APP_URL`: `https://pic.219design.co.uk` for now, then the real domain.
+
+Webhook (Stripe Dashboard → Developers → Webhooks → Add endpoint):
+- URL: `https://<site>/stripe/webhook`
+- **Listen to events on Connected accounts** (this matters: clubs are connected accounts).
+- Events: `checkout.session.completed`, `checkout.session.expired`, `account.updated`.
+
+Do not set `PMC_STRIPE_FAKE` or `PMC_MAIL_FAKE` on the live server; they exist for automated tests only.
+
+Email: confirmations are sent with PHP's `mail()` from `hello@playmorecricket.com`. It needs the server's mail
+sending to work and that mailbox to exist. Failed sends are kept in the `email_outbox` table with the error.
+Tell us if `mail()` is not available and we will switch to SMTP.
+
+The club connects its own Stripe account from the club page (logged in as the club contact): **Set up payments**.
+Until that is finished, visitors see "online booking coming soon" and cannot reserve hours.
+
 ## Coming later
-- Email sending (confirmations) from hello@playmorecricket.com: SMTP settings for that mailbox.
-- A scheduled job (cron) every few minutes.
-- A Stripe webhook address, which we will supply.
+- A scheduled job (cron) to retry failed emails, and SMTP if `mail()` is not suitable.
