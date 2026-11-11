@@ -22,3 +22,5 @@ fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}
 .diary small{color:var(--muted)}.diary input[type=checkbox]{width:18px;height:18px;margin:0}
 .tick{color:#1c8a4a;font-weight:700}.dbs-legend{margin:.2em 0 .6em;font-weight:500}
 @media (prefers-color-scheme:dark){.tick{color:#4cd08a}}
+.coaches{list-style:none;padding:0;display:grid;gap:10px}.coaches li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.coach-main{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}.dbs-right{font-weight:500;white-space:nowrap}

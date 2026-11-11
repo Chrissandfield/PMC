@@ -238,13 +238,12 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release)?$#', $path, $m)) {
        . '<div><h1>' . h($club['name']) . '</h1><p class="muted">' . h($club['town']) . ', ' . h($club['county']) . ' ' . h((string) $club['postcode']) . '</p></div></div>';
     $coaches = club_coaches((int) $club['id']);
     if ($coaches) {
-        $years = [];
-        foreach ($coaches as $c) { if ($c['dbs_checked'] && $c['dbs_checked_on']) { $years[] = (int) date('Y', strtotime((string) $c['dbs_checked_on'])); } }
-        $yr = $years ? (min($years) === max($years) ? (string) min($years) : min($years) . '–' . max($years)) : '';
-        $b .= '<h2>Coaches</h2>' . ($years ? '<p class="dbs-legend"><span class="tick" aria-hidden="true">✓</span> DBS checked ' . h($yr) . '</p>' : '') . '<ul class="plain">';
+        $b .= '<h2>Coaches</h2><ul class="coaches">';
         foreach ($coaches as $c) {
-            $b .= '<li><strong>' . h($c['name']) . '</strong>' . ($c['dbs_checked'] ? ' <span class="tick" title="DBS checked" aria-label="DBS checked">✓</span>' : '')
-                . ' · ' . h($c['qualification']) . ' · ' . money((int) $c['hourly_price_pence']) . '/hr</li>';
+            $yr = ($c['dbs_checked'] && $c['dbs_checked_on']) ? date('Y', strtotime((string) $c['dbs_checked_on'])) : '';
+            $b .= '<li><div class="coach-main"><strong>' . h($c['name']) . '</strong>'
+                . ($yr !== '' ? '<span class="dbs-right"><span class="tick" aria-hidden="true">✓</span> DBS checked ' . h($yr) . '</span>' : '') . '</div>'
+                . '<div class="muted">' . h($c['qualification']) . ' · ' . money((int) $c['hourly_price_pence']) . '/hr</div></li>';
         }
         $b .= '</ul>';
     }

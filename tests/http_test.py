@@ -34,7 +34,7 @@ anon=client()
 s,h,hd=req(anon,'/'); ok(s==200 and 'Penshurst Park Cricket Club' in h,'home lists the club')
 ok("default-src 'self'" in hd.get('Content-Security-Policy',''),'security headers present')
 s,h,_=req(anon,f'/club/penshurst-park?week={wk}'); ok(s==200 and 'Free' in h and 'Release' not in h and 'Book</a>' not in h,'anonymous sees Free, no Book/Release links')
-ok('Jake Cheeseman' in h and 'DBS checked 2026' in h and 'class="tick"' in h and '3 Nov 2026' not in h and 'ECB Support Coach (Level 1)' in h,'coach qualification and DBS date shown publicly')
+ok('Jake Cheeseman' in h and 'DBS checked 2026' in h and 'class="dbs-right"' in h and '3 Nov 2026' not in h and 'ECB Support Coach (Level 1)' in h,'coach qualification and DBS date shown publicly')
 s,_,hd=req(anon,'/club/penshurst-park/book?start='+slot(10)); ok(s==303 and hd['Location']=='/login','anonymous booking page sends to login')
 s,_,_=req(anon,'/admin'); ok(s==303,'admin needs login')
 
