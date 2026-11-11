@@ -20,3 +20,5 @@ fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}
 .diary td.free{background:var(--free)}.diary td.taken{background:var(--taken)}.diary td.closed{color:var(--muted)}.diary form{margin-top:2px}
 .foot{margin-top:40px;color:var(--muted);font-size:.85rem}
 .diary small{color:var(--muted)}.diary input[type=checkbox]{width:18px;height:18px;margin:0}
+.tick{color:#1c8a4a;font-weight:700}.dbs-legend{margin:.2em 0 .6em;font-weight:500}
+@media (prefers-color-scheme:dark){.tick{color:#4cd08a}}
