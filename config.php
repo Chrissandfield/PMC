@@ -6,10 +6,8 @@ $get = static fn(string $env, string $key, string $default = '') =>
     getenv($env) !== false && getenv($env) !== '' ? (string) getenv($env) : (string) ($local[$key] ?? $default);
 
 return [
-    'db_dsn'  => $get('PMC_DB_DSN', 'db_dsn', 'mysql:host=localhost;dbname=pmc;charset=utf8mb4'),
-    'db_user' => $get('PMC_DB_USER', 'db_user'),
-    'db_pass' => $get('PMC_DB_PASS', 'db_pass'),
-    'stripe_secret' => $get('PMC_STRIPE_SECRET', 'stripe_secret'),
-    'stripe_webhook_secret' => $get('PMC_STRIPE_WEBHOOK_SECRET', 'stripe_webhook_secret'),
-    'app_url' => $get('PMC_APP_URL', 'app_url', 'http://localhost:8080'),
+'db_dsn'  => $get('PMC_DB_DSN', 'db_dsn', 'mysql:host=localhost;dbname=pic_219d1_schema;charset=utf8mb4'),
+'db_user' => $get('PMC_DB_USER', 'db_user', 'pic_219d1_user'),
+'db_pass' => $get('PMC_DB_PASS', 'db_pass', 'db_pass'),
+'app_url' => $get('PMC_APP_URL', 'app_url', 'https://pic.219design.co.uk'),
 ];
