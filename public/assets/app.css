@@ -19,3 +19,4 @@ fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}
 .diary{border-collapse:collapse;width:100%;min-width:640px;table-layout:fixed;font-size:.88rem}.diary th:first-child{width:62px}.diary th,.diary td{overflow-wrap:anywhere;border:1px solid var(--line);padding:6px;text-align:center;vertical-align:middle}
 .diary td.free{background:var(--free)}.diary td.taken{background:var(--taken)}.diary td.closed{color:var(--muted)}.diary form{margin-top:2px}
 .foot{margin-top:40px;color:var(--muted);font-size:.85rem}
+.diary small{color:var(--muted)}.diary input[type=checkbox]{width:18px;height:18px;margin:0}

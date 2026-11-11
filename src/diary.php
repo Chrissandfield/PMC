@@ -103,6 +103,14 @@ function staff_book(array $user, array $club, array $net, string $localStart, ar
             $coach = own_coach($user, $club);   // coaches book only as themselves
         }
         if (!$coach) { return [false, 'Choose a coach for this booking.']; }
+        $busy = q('SELECT 1 FROM bookings WHERE coach_id = ? AND starts_at = ? AND status IN ' . LIVE, [$coach['id'], utc_string($start)])->fetch();
+        if ($busy) { return [false, $coach['name'] . ' is already booked at that time.']; }
+        if ($manager) {
+            $avail = q('SELECT 1 FROM coach_availability WHERE coach_id = ? AND starts_at = ?', [$coach['id'], utc_string($start)])->fetch();
+            if (!$avail && empty($in['override'])) {
+                return [false, $coach['name'] . ' has not marked that hour as available. Tick "override" if you have agreed it with them.'];
+            }
+        }
     }
     if ($machine && ($type !== 'coach' && (int) $net['machine_coach_only'] === 1)) { return [false, 'The machine is only available with a coach.']; }
     if ($machine && $net['machine_price_pence'] === null) { return [false, 'This net has no machine.']; }
@@ -159,4 +167,78 @@ function release_booking(array $user, array $club, int $bookingId): array
       [utc_string(new DateTimeImmutable('now', london())), $bookingId]);
     audit((int) $user['id'], 'booking_released', $b['reference']);
     return [true, 'Released ' . $b['reference'] . '.'];
+}
+
+const LIVE = "('pending_payment','confirmed')";
+
+/** Hours coaches at this club have marked available in the week: [coach_id]['Y-m-d H'] => true. */
+function week_availability(int $clubId, DateTimeImmutable $monday): array
+{
+    $rows = q('SELECT a.coach_id, a.starts_at FROM coach_availability a JOIN coaches c ON c.id = a.coach_id
+               WHERE c.club_id = ? AND a.starts_at >= ? AND a.starts_at < ?',
+              [$clubId, utc_string($monday->modify('-1 day')), utc_string($monday->modify('+8 days'))])->fetchAll();
+    $out = [];
+    foreach ($rows as $r) { $out[(int) $r['coach_id']][from_utc($r['starts_at'])->format('Y-m-d H')] = true; }
+    return $out;
+}
+
+/** Hours coaches are already booked in the week (any net): [coach_id]['Y-m-d H'] => true. */
+function week_coach_busy(int $clubId, DateTimeImmutable $monday): array
+{
+    $rows = q('SELECT b.coach_id, b.starts_at FROM bookings b JOIN coaches c ON c.id = b.coach_id
+               WHERE c.club_id = ? AND b.status IN ' . LIVE . ' AND b.starts_at >= ? AND b.starts_at < ?',
+              [$clubId, utc_string($monday->modify('-1 day')), utc_string($monday->modify('+8 days'))])->fetchAll();
+    $out = [];
+    foreach ($rows as $r) { $out[(int) $r['coach_id']][from_utc($r['starts_at'])->format('Y-m-d H')] = true; }
+    return $out;
+}
+
+/** Coaches of the club for one hour, split into free (available and not booked) and the rest. */
+function coaches_for_hour(int $clubId, DateTimeImmutable $startLocal): array
+{
+    $u = utc_string($startLocal);
+    $free = []; $other = [];
+    foreach (club_coaches($clubId) as $c) {
+        $avail = q('SELECT 1 FROM coach_availability WHERE coach_id = ? AND starts_at = ?', [$c['id'], $u])->fetch();
+        $busy  = q('SELECT 1 FROM bookings WHERE coach_id = ? AND starts_at = ? AND status IN ' . LIVE, [$c['id'], $u])->fetch();
+        if ($busy) { continue; }
+        if ($avail) { $free[] = $c; } else { $other[] = $c; }
+    }
+    return [$free, $other];
+}
+
+/**
+ * Save a coach's available hours for one week, optionally repeating the same pattern for the next
+ * $repeatWeeks weeks. $selected holds 'dayIndex-hour' strings (day 0 = Monday). Only future hours
+ * inside the club's opening times are kept.
+ */
+function save_availability(array $coach, DateTimeImmutable $monday, array $selected, int $repeatWeeks): void
+{
+    $nets = club_nets((int) $coach['club_id']);
+    $now = new DateTimeImmutable('now', london());
+    $pattern = [];
+    foreach ($selected as $s) {
+        if (!is_string($s) || !preg_match('/^([0-6])-(\d{1,2})$/', $s, $m)) { continue; }
+        $pattern[] = [(int) $m[1], (int) $m[2]];
+    }
+    $repeatWeeks = max(0, min(12, $repeatWeeks));
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        for ($w = 0; $w <= $repeatWeeks; $w++) {
+            $wk = $monday->modify('+' . (7 * $w) . ' days');
+            q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?',
+              [$coach['id'], utc_string($wk->setTime(0, 0)), utc_string($wk->modify('+7 days')->setTime(0, 0))]);
+            foreach ($pattern as [$di, $h]) {
+                $day = $wk->modify("+$di days");
+                $slot = $day->setTime($h, 0);
+                if ($slot <= $now) { continue; }
+                $open = false;
+                foreach ($nets as $n) { $hrs = hours_for((int) $n['id'], $day); if ($hrs && $h >= $hrs[0] && $h < $hrs[1]) { $open = true; } }
+                if (!$open) { continue; }
+                q('INSERT INTO coach_availability (coach_id, starts_at) VALUES (?, ?)', [$coach['id'], utc_string($slot)]);
+            }
+        }
+        $pdo->commit();
+    } catch (Throwable $e) { $pdo->rollBack(); throw $e; }
 }

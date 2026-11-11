@@ -31,6 +31,11 @@ Import them once, in that order, into an empty database. Do not re-import over l
 Needs MySQL 8.0.16+ or MariaDB 10.5+ (for CHECK constraints and the stored generated column).
 Please tell us the exact version shown on the phpMyAdmin home page.
 
+### 3b. If the database was imported before 11 Nov 2026
+Run `db/migrations/001_coach_availability.sql` once in the phpMyAdmin SQL tab. It adds the table for
+coach availability and a second guard so a coach cannot hold two bookings in the same hour.
+(A fresh import of the current `schema.sql` already includes this, so skip it then.)
+
 ## 4. Check the double-booking guard (phpMyAdmin → SQL tab)
 This confirms two people cannot hold the same hour. Run the statements one at a time and note
 what happens.
@@ -54,7 +59,19 @@ VALUES ('TEST-0002', 1, 'blocked', '2030-01-01 10:00:00', '2030-01-01 11:00:00',
 -- E: clean up
 DELETE FROM bookings WHERE reference LIKE 'TEST-%';
 ```
-Expected: A ok, **B fails**, C ok, D ok, E ok. Please send us the exact error text from B,
+Expected: A ok, **B fails**, C ok, D ok, E ok.
+
+Then the same check for coaches (after 3b). Replace `COACH_ID` with a real id from the `coaches` table
+and `USER_ID` with a real id from `users`:
+```sql
+INSERT INTO bookings (reference, net_id, coach_id, booking_type, starts_at, ends_at, status, created_by_user_id)
+VALUES ('TEST-0003', 1, COACH_ID, 'coach', '2030-01-02 10:00:00', '2030-01-02 11:00:00', 'confirmed', USER_ID);
+-- must FAIL "Duplicate entry ... bookings_one_coach_per_slot" (different net, same coach and hour):
+INSERT INTO bookings (reference, net_id, coach_id, booking_type, starts_at, ends_at, status, created_by_user_id)
+VALUES ('TEST-0004', 2, COACH_ID, 'coach', '2030-01-02 10:00:00', '2030-01-02 11:00:00', 'confirmed', USER_ID);
+DELETE FROM bookings WHERE reference LIKE 'TEST-%';
+```
+(Skip this one if there is only one net. The second insert needs a second net with id 2.) Please send us the exact error text from B,
 and any error from any other step.
 
 ## 5. First logins

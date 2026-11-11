@@ -51,11 +51,11 @@ s,loc=book(jake,slot(10),type='member',customer_name='Dupe'); ok('start=' in (lo
 ok(psql("select count(*) from bookings where status='confirmed'")=='1','still exactly one booking')
 
 s,loc=book(jake,slot(11),type='nonmember',customer_name='Mach',machine='1'); ok('start=' in (loc or ''),'machine refused without coach'); print('   ',flash_of(jake,loc))
-s,loc=book(jake,slot(12),type='coach',coach_id=3,customer_name='Kid',machine='1',junior='1',child_first_name='Lee',child_age='11')
+s,loc=book(jake,slot(12),type='coach',coach_id=3,override='1',customer_name='Kid',machine='1',junior='1',child_first_name='Lee',child_age='11')
 ok('start=' in (loc or ''),'junior without parent tick refused'); print('   ',flash_of(jake,loc))
-s,loc=book(jake,slot(12),type='coach',coach_id=3,customer_name='Kid',machine='1',junior='1',child_first_name='Lee',child_age='11',parent_confirmed='1')
+s,loc=book(jake,slot(12),type='coach',coach_id=3,override='1',customer_name='Kid',machine='1',junior='1',child_first_name='Lee',child_age='11',parent_confirmed='1')
 ok('start=' not in (loc or ''),'junior with parent tick accepted')
-ok(psql("select price_pence||','||is_junior||','||child_age from bookings where child_first_name='Lee'") in ('5600,t,11','5600,1,11'),'coach £44 + machine £12 = £56, junior details stored')
+ok(psql("select price_pence||','||is_junior||','||child_age from bookings where child_first_name='Lee'") in ('5600,t,11','5600,1,11','5600,true,11'),'coach £44 + machine £12 = £56, junior details stored')
 s,loc=book(jake,slot(22),type='member',customer_name='Late'); ok('start=' in (loc or ''),'closed hour refused'); print('   ',flash_of(jake,loc))
 past=(datetime.date.today()-datetime.timedelta(days=1)).isoformat()+'T10'
 s,loc=book(jake,past,type='member',customer_name='Old'); ok('start=' in (loc or ''),'past time refused'); print('   ',flash_of(jake,loc))

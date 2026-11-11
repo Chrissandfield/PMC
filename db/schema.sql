@@ -131,6 +131,10 @@ CREATE TABLE bookings (
   slot_key DATETIME GENERATED ALWAYS AS
     (CASE WHEN status IN ('pending_payment','confirmed') THEN starts_at ELSE NULL END) STORED,
   UNIQUE KEY bookings_one_per_slot (net_id, slot_key),
+  -- The same idea for coaches: one live booking per coach per hour.
+  coach_slot_key DATETIME GENERATED ALWAYS AS
+    (CASE WHEN coach_id IS NOT NULL AND status IN ('pending_payment','confirmed') THEN starts_at ELSE NULL END) STORED,
+  UNIQUE KEY bookings_one_coach_per_slot (coach_id, coach_slot_key),
   KEY bookings_by_start (starts_at),
   KEY bookings_by_email (customer_email),
   CONSTRAINT bookings_net_fk   FOREIGN KEY (net_id) REFERENCES nets(id),
@@ -144,6 +148,14 @@ CREATE TABLE bookings (
   CONSTRAINT bookings_junior_ck CHECK (is_junior = 0 OR (parent_confirmed = 1 AND child_first_name IS NOT NULL AND child_age IS NOT NULL)),
   CONSTRAINT bookings_contact_ck CHECK (booking_type NOT IN ('nonmember','coach')
       OR (customer_email IS NOT NULL AND customer_phone IS NOT NULL) OR created_by_user_id IS NOT NULL)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Hours a coach has marked as available (one row per hour, start time in UTC).
+CREATE TABLE coach_availability (
+  coach_id  BIGINT UNSIGNED NOT NULL,
+  starts_at DATETIME NOT NULL,
+  PRIMARY KEY (coach_id, starts_at),
+  CONSTRAINT avail_coach_fk FOREIGN KEY (coach_id) REFERENCES coaches(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Stripe sends each event at least once: keep ids so a repeat is ignored.

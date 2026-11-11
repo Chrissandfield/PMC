@@ -26,6 +26,7 @@ function page(string $title, string $body): never
        . '<link rel="stylesheet" href="/assets/app.css"></head><body><div class="wrap">'
        . '<header class="top"><a class="brand" href="/">PlayMoreCricket</a><nav>';
     if ($u && $u['role'] === 'admin') { echo '<a href="/admin">Admin</a>'; }
+    if ($u && in_array($u['role'], ['coach', 'club_contact'], true)) { echo '<a href="/coach/availability">Coach availability</a>'; }
     if ($u) {
         echo '<form method="post" action="/logout" class="inline">' . csrf_field() . '<button class="link" type="submit">Log out (' . h($u['name']) . ')</button></form>';
     } else {
