@@ -8,7 +8,7 @@ $get = static fn(string $env, string $key, string $default = '') =>
 return [
 'db_dsn'  => $get('PMC_DB_DSN', 'db_dsn', 'mysql:host=localhost;dbname=pic_219d1_schema;charset=utf8mb4'),
 'db_user' => $get('PMC_DB_USER', 'db_user', 'pic_219d1_user'),
-'db_pass' => $get('PMC_DB_PASS', 'db_pass', 'db_pass'),
+'db_pass' => $get('PMC_DB_PASS', 'db_pass', ''),
 'stripe_secret' => $get('PMC_STRIPE_SECRET', 'stripe_secret'),
 'stripe_webhook_secret' => $get('PMC_STRIPE_WEBHOOK_SECRET', 'stripe_webhook_secret'),
 'app_secret' => $get('PMC_APP_SECRET', 'app_secret'),
