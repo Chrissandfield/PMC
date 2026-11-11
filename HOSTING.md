@@ -31,10 +31,11 @@ Import them once, in that order, into an empty database. Do not re-import over l
 Needs MySQL 8.0.16+ or MariaDB 10.5+ (for CHECK constraints and the stored generated column).
 Please tell us the exact version shown on the phpMyAdmin home page.
 
-### 3b. If the database was imported before 11 Nov 2026
-Run `db/migrations/001_coach_availability.sql` once in the phpMyAdmin SQL tab. It adds the table for
-coach availability and a second guard so a coach cannot hold two bookings in the same hour.
-(A fresh import of the current `schema.sql` already includes this, so skip it then.)
+### 3b. Database updates (no SQL needed)
+Later database changes live in `db/migrations/` and are applied from the site itself: an administrator
+opens `/admin` and clicks **Apply updates**. If the database was imported before 11 Nov 2026 that button
+adds coach availability and a second guard so a coach cannot hold two bookings in the same hour.
+(A fresh import of the current `schema.sql` already includes everything, so nothing will be pending.)
 
 ## 4. Check the double-booking guard (phpMyAdmin → SQL tab)
 This confirms two people cannot hold the same hour. Run the statements one at a time and note
@@ -61,7 +62,7 @@ DELETE FROM bookings WHERE reference LIKE 'TEST-%';
 ```
 Expected: A ok, **B fails**, C ok, D ok, E ok.
 
-Then the same check for coaches (after 3b). Replace `COACH_ID` with a real id from the `coaches` table
+Then the same check for coaches (after the admin has clicked Apply updates). Replace `COACH_ID` with a real id from the `coaches` table
 and `USER_ID` with a real id from `users`:
 ```sql
 INSERT INTO bookings (reference, net_id, coach_id, booking_type, starts_at, ends_at, status, created_by_user_id)
@@ -74,11 +75,10 @@ DELETE FROM bookings WHERE reference LIKE 'TEST-%';
 (Skip this one if there is only one net. The second insert needs a second net with id 2.) Please send us the exact error text from B,
 and any error from any other step.
 
-## 5. First logins
-Logins are created from the command line, one per person:
-`php bin/create-user.php email@example.com "Full Name" admin`
-(roles: `admin`, `club_contact`, `coach`; the last two also need the club slug, `penshurst-park`).
-It asks for a password. If the server has no shell access, tell us and we will provide another way.
+## 5. First login
+Open `https://pic.219design.co.uk/setup` and create the administrator login. That page only works while
+there are no users and then switches itself off. All other logins (club contacts, coaches) are then
+added by the administrator from `/admin`. No command line is needed.
 
 ## 6. Smoke test
 - `https://pic.219design.co.uk/` shows "Find a cricket net" with Penshurst Park Cricket Club.

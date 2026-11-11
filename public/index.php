@@ -20,6 +20,28 @@ if ($path === '/' && $method === 'GET') {
     page('Find a net', $b . '</ul>');
 }
 
+
+// One-time setup: only works while there are no users at all, then it disappears.
+if ($path === '/setup') {
+    $count = (int) q('SELECT COUNT(*) AS n FROM users')->fetch()['n'];
+    if ($count > 0) { http_response_code(404); page('Not found', '<p>That page does not exist.</p>'); }
+    if ($method === 'POST') {
+        csrf_check();
+        $email = trim((string) ($_POST['email'] ?? '')); $name = trim((string) ($_POST['name'] ?? '')); $pw = (string) ($_POST['password'] ?? '');
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || strlen($pw) < 10) {
+            flash('Enter a valid email, your name, and a password of at least 10 characters.', true); redirect('/setup');
+        }
+        q('INSERT INTO users (email, password_hash, name, role) VALUES (?,?,?,?)', [$email, password_hash($pw, PASSWORD_DEFAULT), $name, 'admin']);
+        audit(null, 'first_admin_created', $email);
+        flash('Admin login created. Please log in.'); redirect('/login');
+    }
+    page('Set up', '<h1>Set up PlayMoreCricket</h1><p class="muted">Create the first administrator login. This page stops working once it has been used.</p>'
+        . '<form method="post" class="card narrow">' . csrf_field()
+        . '<label>Your name<input name="name" required></label><label>Email<input type="email" name="email" required autocomplete="username"></label>'
+        . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
+        . '<button type="submit">Create admin login</button></form>');
+}
+
 if ($path === '/login') {
     if ($method === 'POST') {
         csrf_check();
@@ -39,7 +61,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if ($path === '/admin' || $path === '/admin/commission') {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -52,7 +74,47 @@ if ($path === '/admin' || $path === '/admin/commission') {
         audit((int) $user['id'], 'commission_changed', 'club ' . (int) $_POST['club_id'] . ' ' . $pct . '% until ' . $free);
         flash('Commission saved.'); redirect('/admin');
     }
-    $b = '<h1>Admin</h1><h2>Clubs and commission</h2>';
+    if ($path === '/admin/migrate' && $method === 'POST') {
+        csrf_check();
+        [$done, $err] = run_migrations();
+        audit((int) $user['id'], 'migrations_run', implode(',', $done) . ($err ? ' ERROR ' . $err : ''));
+        flash($err ? 'Update stopped: ' . $err : ($done ? 'Database updated: ' . implode(', ', $done) . '.' : 'Nothing to update. The database is up to date.'), (bool) $err);
+        redirect('/admin');
+    }
+    if ($path === '/admin/users' && $method === 'POST') {
+        csrf_check();
+        $email = trim((string) ($_POST['email'] ?? '')); $name = trim((string) ($_POST['name'] ?? '')); $pw = (string) ($_POST['password'] ?? '');
+        $role = (string) ($_POST['role'] ?? ''); $clubId = (int) ($_POST['club_id'] ?? 0); $coachId = (int) ($_POST['coach_id'] ?? 0);
+        $club = $clubId ? q('SELECT id FROM clubs WHERE id = ?', [$clubId])->fetch() : null;
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || strlen($pw) < 10 || !in_array($role, ['admin', 'club_contact', 'coach'], true) || ($role !== 'admin' && !$club)) {
+            flash('Enter a valid email, a name, a role, a club (for non-admins) and a password of at least 10 characters.', true); redirect('/admin');
+        }
+        if (q('SELECT 1 FROM users WHERE email = ?', [$email])->fetch()) { flash('That email already has a login.', true); redirect('/admin'); }
+        q('INSERT INTO users (email, password_hash, name, role, club_id) VALUES (?,?,?,?,?)', [$email, password_hash($pw, PASSWORD_DEFAULT), $name, $role, $role === 'admin' ? null : $clubId]);
+        $newId = (int) q('SELECT id FROM users WHERE email = ?', [$email])->fetch()['id'];
+        if ($role === 'coach' && $coachId) { q('UPDATE coaches SET user_id = ? WHERE id = ? AND club_id = ? AND user_id IS NULL', [$newId, $coachId, $clubId]); }
+        audit((int) $user['id'], 'user_created', $email . ' ' . $role);
+        flash('Login created for ' . $name . '.'); redirect('/admin');
+    }
+    $pending = pending_migrations();
+    $b = '<h1>Admin</h1><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()
+       . '<span>' . ($pending ? '<strong>' . count($pending) . ' update(s) waiting:</strong> ' . h(implode(', ', array_keys($pending))) : 'The database is up to date.') . '</span>'
+       . '<button type="submit">Apply updates</button></form>';
+    $clubsAll = q('SELECT id, name FROM clubs ORDER BY name')->fetchAll();
+    $coachesFree = q('SELECT id, club_id, name FROM coaches WHERE user_id IS NULL AND active ORDER BY name')->fetchAll();
+    $opts = ''; foreach ($clubsAll as $c) { $opts .= '<option value="' . (int) $c['id'] . '">' . h($c['name']) . '</option>'; }
+    $copts = '<option value="0">(none)</option>'; foreach ($coachesFree as $c) { $copts .= '<option value="' . (int) $c['id'] . '">' . h($c['name']) . '</option>'; }
+    $b .= '<h2>Logins</h2><ul class="plain">';
+    foreach (q('SELECT u.name, u.email, u.role, c.name AS club FROM users u LEFT JOIN clubs c ON c.id = u.club_id ORDER BY u.role, u.name')->fetchAll() as $u2) {
+        $b .= '<li><strong>' . h($u2['name']) . '</strong> · ' . h($u2['email']) . ' · ' . h($u2['role']) . ($u2['club'] ? ' · ' . h($u2['club']) : '') . '</li>';
+    }
+    $b .= '</ul><form method="post" action="/admin/users" class="card narrow"><strong>Add a login</strong>' . csrf_field()
+        . '<label>Name<input name="name" required></label><label>Email<input type="email" name="email" required autocomplete="off"></label>'
+        . '<label>Role<select name="role"><option value="club_contact">Club contact</option><option value="coach">Coach</option><option value="admin">Administrator</option></select></label>'
+        . '<label>Club<select name="club_id">' . $opts . '</select></label>'
+        . '<label>Coach record to link (coaches only)<select name="coach_id">' . $copts . '</select></label>'
+        . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
+        . '<button type="submit">Create login</button></form><h2>Clubs and commission</h2>';
     foreach (q('SELECT id, name, status, commission_pct, commission_free_until FROM clubs ORDER BY name')->fetchAll() as $c) {
         $b .= '<form method="post" action="/admin/commission" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
             . '<strong>' . h($c['name']) . '</strong> <span class="muted">(' . h($c['status']) . ')</span>'

@@ -188,3 +188,10 @@ CREATE TABLE audit_log (
   detail      VARCHAR(500),
   CONSTRAINT audit_user_fk FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Database updates already included above. New migrations in db/migrations/ run from the admin page.
+CREATE TABLE schema_migrations (
+  name       VARCHAR(120) NOT NULL PRIMARY KEY,
+  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT INTO schema_migrations (name) VALUES ('001_coach_availability');
