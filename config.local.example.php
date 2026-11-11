@@ -5,5 +5,8 @@ return [
     'db_dsn'  => 'mysql:host=localhost;dbname=pic_219d1_schema;charset=utf8mb4',
     'db_user' => 'pic_219d1_user',
     'db_pass' => 'PUT-THE-DATABASE-PASSWORD-HERE',
+    // Added later, when Stripe is connected:
+    // 'stripe_secret' => 'sk_test_...',
+    // 'stripe_webhook_secret' => 'whsec_...',
     'app_url' => 'https://pic.219design.co.uk',
 ];
