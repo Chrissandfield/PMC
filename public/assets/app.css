@@ -24,3 +24,6 @@ fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}
 @media (prefers-color-scheme:dark){.tick{color:#4cd08a}}
 .coaches{list-style:none;padding:0;display:grid;gap:10px}.coaches li{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
 .coach-main{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}.dbs-right{font-weight:500;white-space:nowrap}
+.daylist{display:none}.daytabs{display:flex;gap:6px;flex-wrap:wrap}.daytabs a{padding:6px 9px;border:1px solid var(--line);border-radius:8px;text-decoration:none;background:var(--card)}.daytabs a.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.slots{list-style:none;padding:0;display:grid;gap:6px}.slots li{padding:10px 12px;border-radius:8px;border:1px solid var(--line)}.slots li.free{background:var(--free)}.slots li.taken{background:var(--taken)}
+@media (max-width:700px){.daylist{display:block}.scroll,.weeknav+.scroll{display:none}}

@@ -163,6 +163,15 @@ function release_booking(array $user, array $club, int $bookingId): array
         $mine = own_coach($user, $club);
         if (!$mine || (int) $b['coach_id'] !== (int) $mine['id']) { return [false, 'You can only release your own bookings.']; }
     }
+    if (!empty($b['stripe_payment_intent_id'])) {   // paid online: the club is cancelling, so the customer is refunded in full
+        $full = booking_by_ref($b['reference']);
+        [$ok, $msg] = refund_booking($full, 'Cancelled by the club');
+        if (!$ok) { return [false, $msg]; }
+        audit((int) $user['id'], 'booking_released_refunded', $b['reference']);
+        send_email($full['customer_email'], 'Booking cancelled by the club: ' . $b['reference'],
+            "Hello {$full['customer_name']},\n\nSorry: the club has had to cancel your booking and you have been refunded in full.\n\n" . describe_booking($full) . "\n\nPlayMoreCricket", (int) $b['id']);
+        return [true, 'Released ' . $b['reference'] . ' and refunded the customer.'];
+    }
     q("UPDATE bookings SET status = 'cancelled', cancelled_at = ?, cancel_reason = 'Released by staff' WHERE id = ?",
       [utc_string(new DateTimeImmutable('now', london())), $bookingId]);
     audit((int) $user['id'], 'booking_released', $b['reference']);

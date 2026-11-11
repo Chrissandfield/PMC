@@ -9,6 +9,14 @@ declare(strict_types=1);
  * variables on the host (PMC_STRIPE_SECRET, PMC_STRIPE_WEBHOOK_SECRET, or config.local.php on the server), never in the code.
  */
 
+/** Test mode only (PMC_STRIPE_FAKE=1): Stripe calls return canned answers and nothing leaves the server. */
+function stripe_fake(): bool { return getenv('PMC_STRIPE_FAKE') === '1'; }
+
+function stripe_configured(): bool
+{
+    return stripe_fake() || (string) ($GLOBALS['cfg']['stripe_secret'] ?? '') !== '';
+}
+
 function stripe_secret(): string
 {
     $k = $GLOBALS['cfg']['stripe_secret'] ?? '';
@@ -43,6 +51,7 @@ function stripe_encode(array $data, string $prefix = ''): array
 /** Call the Stripe API. $account = connected account id for direct charges. */
 function stripe_call(string $method, string $path, array $data = [], ?string $account = null, ?string $idempotencyKey = null): array
 {
+    if (stripe_fake()) { return stripe_fake_response($method, $path, $data, $account); }
     $headers = ['Authorization: Bearer ' . stripe_secret()];
     if ($account !== null) { $headers[] = 'Stripe-Account: ' . $account; }
     if ($idempotencyKey !== null) { $headers[] = 'Idempotency-Key: ' . $idempotencyKey; }
@@ -102,7 +111,7 @@ function stripe_checkout_session(array $booking, string $accountId, string $desc
         'cancel_url'  => $cancelUrl,
         'customer_email' => $booking['customer_email'],
         'client_reference_id' => $booking['reference'],
-        'expires_at' => time() + 30 * 60,                    // Stripe's minimum is 30 minutes
+        'expires_at' => time() + 31 * 60,                    // Stripe's minimum is 30 minutes
         'line_items' => [[
             'quantity' => 1,
             'price_data' => ['currency' => 'gbp', 'unit_amount' => (int) $booking['price_pence'],
@@ -155,4 +164,29 @@ function refund_allowed(DateTimeImmutable $startsAtUtc, ?DateTimeImmutable $nowU
 {
     $nowUtc ??= new DateTimeImmutable('now', new DateTimeZone('UTC'));
     return ($startsAtUtc->getTimestamp() - $nowUtc->getTimestamp()) >= 24 * 3600;
+}
+
+function stripe_fake_response(string $method, string $path, array $data, ?string $account): array
+{
+    $app = $GLOBALS['cfg']['app_url'] ?? '';
+    if ($path === '/v1/accounts' && $method === 'POST') { return ['id' => 'acct_fake_' . ($data['metadata']['club_id'] ?? '0')]; }
+    if (str_starts_with($path, '/v1/accounts/')) { return ['id' => substr($path, 13), 'charges_enabled' => getenv('PMC_STRIPE_FAKE_CHARGES') !== '0', 'details_submitted' => true]; }
+    if ($path === '/v1/account_links') { return ['url' => $app . '/stripe/return?club=' . ($GLOBALS['fake_club_slug'] ?? '')]; }
+    if ($path === '/v1/checkout/sessions') {
+        if (getenv('PMC_STRIPE_FAKE_FAIL') === '1') { throw new RuntimeException('Stripe error 400: fake failure'); }
+        $ref = $data['client_reference_id'] ?? 'x';
+        return ['id' => 'cs_fake_' . $ref, 'url' => 'https://checkout.stripe.test/pay/' . $ref, 'account' => $account, 'amount_total' => $data['line_items'][0]['price_data']['unit_amount'] ?? 0,
+                'application_fee' => $data['payment_intent_data']['application_fee_amount'] ?? 0];
+    }
+    if ($path === '/v1/refunds') {
+        if (getenv('PMC_STRIPE_FAKE_FAIL') === '1') { throw new RuntimeException('Stripe error 400: fake refund failure'); }
+        return ['id' => 're_fake_' . ($data['metadata']['booking_reference'] ?? 'x'), 'status' => 'succeeded'];
+    }
+    throw new RuntimeException('fake stripe: unhandled ' . $method . ' ' . $path);
+}
+
+/** Ask Stripe whether a club's connected account can take card payments yet. */
+function stripe_retrieve_account(string $accountId): array
+{
+    return stripe_call('GET', '/v1/accounts/' . rawurlencode($accountId));
 }

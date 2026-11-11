@@ -11,5 +11,6 @@ return [
 'db_pass' => $get('PMC_DB_PASS', 'db_pass', 'db_pass'),
 'stripe_secret' => $get('PMC_STRIPE_SECRET', 'stripe_secret'),
 'stripe_webhook_secret' => $get('PMC_STRIPE_WEBHOOK_SECRET', 'stripe_webhook_secret'),
+'app_secret' => $get('PMC_APP_SECRET', 'app_secret'),
 'app_url' => $get('PMC_APP_URL', 'app_url', 'https://pic.219design.co.uk'),
 ];

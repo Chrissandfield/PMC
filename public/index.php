@@ -178,7 +178,68 @@ if ($path === '/coach/availability') {
     page('Coach availability', $b);
 }
 
-if (preg_match('#^/club/([a-z0-9-]+)(/book|/release)?$#', $path, $m)) {
+
+// ---- Stripe webhook (must read the raw body; no login, no CSRF: the signature is the proof)
+if ($path === '/stripe/webhook' && $method === 'POST') {
+    $payload = (string) file_get_contents('php://input');
+    $event = stripe_verify_webhook($payload, (string) ($_SERVER['HTTP_STRIPE_SIGNATURE'] ?? ''), (string) $GLOBALS['cfg']['stripe_webhook_secret']);
+    if (!$event || $GLOBALS['cfg']['stripe_webhook_secret'] === '') { http_response_code(400); echo 'invalid'; exit; }
+    echo handle_stripe_event($event); exit;
+}
+
+// ---- Connect a club to Stripe (club contact for their own club, or admin)
+if ($path === '/stripe/connect' && $method === 'POST') {
+    csrf_check(); $u = require_login();
+    $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+    if (!$club || !can_manage($u, $club)) { http_response_code(403); page('Not allowed', '<p>You cannot manage payments for that club.</p>'); }
+    if (!stripe_configured()) { flash('Stripe is not set up on the server yet.', true); redirect('/club/' . $club['slug']); }
+    try {
+        if (empty($club['stripe_account_id'])) {
+            $acct = stripe_create_club_account($club);
+            q('UPDATE clubs SET stripe_account_id = ? WHERE id = ?', [$acct['id'], $club['id']]);
+            $club['stripe_account_id'] = $acct['id'];
+        }
+        $GLOBALS['fake_club_slug'] = $club['slug'];
+        $url = stripe_account_link($club['stripe_account_id'], $GLOBALS['cfg']['app_url'] . '/stripe/return?club=' . $club['slug'], $GLOBALS['cfg']['app_url'] . '/stripe/return?club=' . $club['slug'] . '&refresh=1');
+    } catch (Throwable $e) { error_log('PMC connect failed: ' . $e->getMessage()); flash('Could not reach Stripe. Please try again.', true); redirect('/club/' . $club['slug']); }
+    audit((int) $u['id'], 'stripe_connect_started', $club['slug']);
+    header('Location: ' . $url, true, 303); exit;
+}
+if ($path === '/stripe/return') {
+    $u = require_login();
+    $club = club_by_slug((string) ($_GET['club'] ?? ''));
+    if (!$club || !can_manage($u, $club) || empty($club['stripe_account_id'])) { redirect('/'); }
+    try {
+        $a = stripe_retrieve_account($club['stripe_account_id']);
+        q('UPDATE clubs SET stripe_charges_enabled = ? WHERE id = ?', [!empty($a['charges_enabled']) ? 1 : 0, $club['id']]);
+        flash(!empty($a['charges_enabled']) ? 'Payments are switched on. Visitors can now book and pay online.' : 'Stripe sign-up is not finished yet. Use "Set up payments" to carry on where you left off.', empty($a['charges_enabled']));
+    } catch (Throwable $e) { error_log('PMC return failed: ' . $e->getMessage()); flash('Could not check with Stripe just now. Please refresh in a minute.', true); }
+    redirect('/club/' . $club['slug']);
+}
+
+// ---- Customer's booking page (link from the confirmation email; protected by a signed token)
+if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})(/cancel)?$#', $path, $bm)) {
+    $b = booking_by_ref($bm[1]);
+    $t = (string) ($_REQUEST['t'] ?? '');
+    if (!$b || !hash_equals(booking_token($b['reference']), $t)) { http_response_code(404); page('Not found', '<p>We could not find that booking.</p>'); }
+    if ($bm[2] ?? '') {
+        if ($method !== 'POST') { redirect(booking_link($b['reference'])); }
+        csrf_check(); [$ok, $msg] = customer_cancel($b); flash($msg, !$ok); redirect(booking_link($b['reference']));
+    }
+    expire_stale(); $b = booking_by_ref($b['reference']);
+    $labels = ['confirmed' => 'Confirmed and paid', 'pending_payment' => 'Waiting for payment', 'refunded' => 'Cancelled and refunded', 'cancelled' => 'Cancelled', 'expired' => 'Expired (not paid)'];
+    $body = '<h1>Your booking</h1><div class="card"><p><strong>' . h($labels[$b['status']] ?? $b['status']) . '</strong> · ' . h($b['reference']) . '</p><p>' . h(describe_booking($b)) . '</p>'
+          . '<p>Price: ' . money((int) $b['price_pence']) . '</p>' . ($b['is_junior'] ? '<p class="muted">Under-18 booking for ' . h((string) $b['child_first_name']) . ', aged ' . (int) $b['child_age'] . '. A parent/guardian will be present.</p>' : '') . '</div>';
+    if ($b['status'] === 'pending_payment') { $body .= '<p class="muted">If you have just paid, this page updates within a minute or so. Refresh to check.</p>'; }
+    if ($b['status'] === 'confirmed') {
+        $ok24 = refund_allowed(new DateTimeImmutable($b['starts_at'], new DateTimeZone('UTC')));
+        $body .= $ok24 ? '<form method="post" action="/booking/' . h($b['reference']) . '/cancel" class="card">' . csrf_field() . '<input type="hidden" name="t" value="' . h($t) . '"><p>You can cancel for a full refund up to 24 hours before the start.</p><button type="submit">Cancel and refund</button></form>'
+                       : '<p class="muted">This session starts in less than 24 hours, so the full fee applies. Contact the club if there is a problem: ' . h((string) $b['club_email']) . '</p>';
+    }
+    page('Your booking', $body);
+}
+
+if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     $club = club_by_slug($m[1]);
     if (!$club) { http_response_code(404); page('Not found', '<p>We could not find that club.</p>'); }
     $sub = $m[2] ?? '';
@@ -193,6 +254,44 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release)?$#', $path, $m)) {
         if (!$user) { redirect('/login'); }
         [$ok, $msg] = release_booking($user, $club, (int) ($_POST['booking_id'] ?? 0));
         flash($msg, !$ok); redirect($self . '?net=' . $netId . '&week=' . urlencode((string) ($_POST['week'] ?? '')));
+    }
+
+    if ($sub === '/reserve') {
+        if (!$net) { http_response_code(404); page('Not found', '<p>We could not find that net.</p>'); }
+        $start = (string) ($_REQUEST['start'] ?? '');
+        if (!online_booking_enabled($club)) { flash('Online booking is not open for this club yet. Please contact the club.', true); redirect($self); }
+        if ($method === 'POST') {
+            csrf_check();
+            [$ok, $msg, $url] = visitor_reserve($club, $net, $start, $_POST);
+            if ($ok) { header('Location: ' . $url, true, 303); exit; }
+            flash($msg, true);
+            $_SESSION['reserve_old'] = array_intersect_key($_POST, array_flip(['kind', 'coach_id', 'machine', 'customer_name', 'customer_email', 'customer_phone', 'junior', 'child_first_name', 'child_age']));
+            redirect($self . '/reserve?net=' . $netId . '&start=' . urlencode($start));
+        }
+        $when = DateTimeImmutable::createFromFormat('!Y-m-d\TH', $start, london());
+        if (!$when) { redirect($self); }
+        $old = $_SESSION['reserve_old'] ?? []; unset($_SESSION['reserve_old']);
+        $v = fn(string $k) => h((string) ($old[$k] ?? ''));
+        [$freeC] = coaches_for_hour((int) $club['id'], $when);
+        $co = ''; foreach ($freeC as $c) { $co .= '<option value="' . (int) $c['id'] . '"' . ((int) ($old['coach_id'] ?? 0) === (int) $c['id'] ? ' selected' : '') . '>' . h($c['name']) . ' · ' . h($c['qualification']) . ' · ' . money((int) $c['hourly_price_pence']) . '</option>'; }
+        $b = '<h1>Book ' . h($net['name']) . '</h1><p class="muted">' . h($when->format('l j F Y, H:i')) . ' · one hour · ' . h($club['name']) . '</p>'
+           . '<form method="post" class="card narrow">' . csrf_field() . '<input type="hidden" name="net" value="' . $netId . '"><input type="hidden" name="start" value="' . h($start) . '">'
+           . '<fieldset><legend>What would you like?</legend>'
+           . '<label class="check"><input type="radio" name="kind" value="net"' . (($old['kind'] ?? 'net') === 'net' ? ' checked' : '') . '> Net hire only · ' . money((int) $net['nonmember_price_pence']) . '</label>'
+           . ($freeC ? '<label class="check"><input type="radio" name="kind" value="coach"' . (($old['kind'] ?? '') === 'coach' ? ' checked' : '') . '> Coaching session (net included)</label>'
+                . '<label>Coach<select name="coach_id">' . $co . '</select></label>'
+                . ($net['machine_price_pence'] !== null ? '<label class="check"><input type="checkbox" name="machine" value="1"' . (!empty($old['machine']) ? ' checked' : '') . '> Add the bowling machine (+' . money((int) $net['machine_price_pence']) . ', coaching sessions only)</label>' : '')
+                : '<p class="muted">No coach is available at this time.</p>')
+           . '</fieldset>'
+           . '<label>Your name<input name="customer_name" value="' . $v('customer_name') . '" required></label>'
+           . '<label>Email<input type="email" name="customer_email" value="' . $v('customer_email') . '" required></label>'
+           . '<label>Phone<input name="customer_phone" value="' . $v('customer_phone') . '" inputmode="tel" required></label>'
+           . '<fieldset><legend>Under 18?</legend><label class="check"><input type="checkbox" name="junior" value="1"' . (!empty($old['junior']) ? ' checked' : '') . '> This booking is for someone under 18</label>'
+           . '<label>Child\'s first name<input name="child_first_name" value="' . $v('child_first_name') . '"></label><label>Child\'s age<input name="child_age" value="' . $v('child_age') . '" inputmode="numeric" size="3"></label>'
+           . '<label class="check"><input type="checkbox" name="parent_confirmed" value="1"> I am the parent/guardian (or have their permission), and a parent/guardian will be present</label></fieldset>'
+           . '<label class="check"><input type="checkbox" name="accept_terms" value="1" required> I accept the booking terms: cancel more than 24 hours before the start for a full refund; within 24 hours the full fee applies. We use your details only to manage your booking.</label>'
+           . '<button type="submit">Continue to payment</button></form><p class="muted">Payment is taken securely by Stripe. The hour is held for 30 minutes while you pay.</p>';
+        page('Book', $b);
     }
 
     if ($sub === '/book') {
@@ -260,7 +359,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release)?$#', $path, $m)) {
         $d = $monday->modify("+$i days"); $open[$i] = hours_for((int) $net['id'], $d);
         if ($open[$i]) { $minH = min($minH, $open[$i][0]); $maxH = max($maxH, $open[$i][1]); }
     }
-    $manager = can_manage($user, $club); $mine = own_coach($user, $club); $now = new DateTimeImmutable('now', london());
+    $manager = can_manage($user, $club); $mine = own_coach($user, $club); $now = new DateTimeImmutable('now', london()); $online = online_booking_enabled($club);
     $b .= '<div class="scroll"><table class="diary"><thead><tr><th></th>';
     for ($i = 0; $i < 7; $i++) { $b .= '<th>' . $monday->modify("+$i days")->format('D j') . '</th>'; }
     $b .= '</tr></thead><tbody>';
@@ -283,12 +382,41 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release)?$#', $path, $m)) {
                 $b .= '</td>';
             } elseif ($past) { $b .= '<td class="closed">–</td>'; }
             elseif ($staff) { $b .= '<td class="free"><a href="' . $self . '/book?net=' . $netId . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h) . '">Book</a>' . ($nFree($key) ? '<br><small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</td>'; }
+            elseif ($online) { $b .= '<td class="free"><a href="' . $self . '/reserve?net=' . $netId . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h) . '">Book</a>' . ($nFree($key) ? '<br><small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</td>'; }
             else { $b .= '<td class="free">Free' . ($nFree($key) ? '<br><small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</td>'; }
         }
         $b .= '</tr>';
     }
     $b .= '</tbody></table></div>';
-    if (!$staff) { $b .= '<p class="muted">Online booking and payment for visitors is coming soon. Until then, contact the club: ' . h((string) $club['phone']) . ' · ' . h((string) $club['email']) . '</p>'; }
+    // Phone-friendly day list (shown instead of the week table on narrow screens)
+    $selDay = DateTimeImmutable::createFromFormat('!Y-m-d', (string) ($_GET['day'] ?? ''), london());
+    if (!$selDay || $selDay < $monday || $selDay >= $monday->modify('+7 days')) { $t0 = new DateTimeImmutable('today', london()); $selDay = ($t0 >= $monday && $t0 < $monday->modify('+7 days')) ? $t0 : $monday; }
+    $b .= '<div class="daylist"><p class="daytabs">';
+    for ($i = 0; $i < 7; $i++) {
+        $dd = $monday->modify("+$i days");
+        $b .= '<a href="' . $self . '?net=' . $netId . '&week=' . $monday->format('Y-m-d') . '&day=' . $dd->format('Y-m-d') . '"' . ($dd->format('Y-m-d') === $selDay->format('Y-m-d') ? ' class="on" aria-current="date"' : '') . '>' . $dd->format('D j') . '</a>';
+    }
+    $b .= '</p><h3>' . h($selDay->format('l j F')) . '</h3><ul class="plain slots">';
+    $si = (int) $selDay->format('N') - 1; $any = false;
+    if ($open[$si]) {
+        for ($h = $open[$si][0]; $h < $open[$si][1]; $h++) {
+            $key = $selDay->format('Y-m-d') . ' ' . sprintf('%02d', $h); $past = $selDay->setTime($h, 0) <= $now; if ($past) { continue; } $any = true;
+            $lab = sprintf('%02d:00', $h);
+            if (isset($bk[$key])) { $x = $bk[$key]; $b .= '<li class="taken"><strong>' . $lab . '</strong> ' . ($staff ? h(($x['booking_type'] === 'blocked' ? 'Blocked' : ($x['customer_name'] ?: ucfirst($x['booking_type']))) . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'BOOKED') . '</li>'; }
+            elseif ($staff || $online) { $b .= '<li class="free"><strong>' . $lab . '</strong> <a href="' . $self . ($staff ? '/book' : '/reserve') . '?net=' . $netId . '&start=' . $selDay->format('Y-m-d') . 'T' . sprintf('%02d', $h) . '">Book</a>' . ($nFree($key) ? ' <small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</li>'; }
+            else { $b .= '<li class="free"><strong>' . $lab . '</strong> Free' . ($nFree($key) ? ' <small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</li>'; }
+        }
+    }
+    if (!$any) { $b .= '<li class="muted">Nothing available on this day.</li>'; }
+    $b .= '</ul></div>';
+    if (!$staff && $online) { $b .= '<p class="muted">Pick a free hour to book and pay online. Questions? ' . h((string) $club['phone']) . ' · ' . h((string) $club['email']) . '</p>'; }
+    if (!$staff && !$online) { $b .= '<p class="muted">Online booking and payment for visitors is coming soon. Until then, contact the club: ' . h((string) $club['phone']) . ' · ' . h((string) $club['email']) . '</p>'; }
+    if ($manager) {
+        $state = empty($club['stripe_account_id']) ? 'Not set up yet' : ((int) $club['stripe_charges_enabled'] === 1 ? 'Payments are on' : 'Sign-up started, not finished');
+        $b .= '<h2>Online payments</h2><form method="post" action="/stripe/connect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $club['id'] . '">'
+            . '<span><strong>' . h($state) . '</strong><br><span class="muted">Customers pay the club directly through Stripe. Commission to PlayMoreCricket: ' . h(rtrim(rtrim((string) $club['commission_pct'], '0'), '.')) . '%.</span></span>'
+            . ((int) $club['stripe_charges_enabled'] === 1 ? '' : '<button type="submit">' . (empty($club['stripe_account_id']) ? 'Set up payments' : 'Continue Stripe sign-up') . '</button>') . '</form>';
+    }
     page($club['name'], $b);
 }
 
