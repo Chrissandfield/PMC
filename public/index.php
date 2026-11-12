@@ -180,6 +180,10 @@ if ($path === '/coach/availability') {
 
 
 // ---- Stripe webhook (must read the raw body; no login, no CSRF: the signature is the proof)
+if ($path === '/stripe/webhook' && $method !== 'POST') {
+    http_response_code(405); header('Allow: POST'); header('Content-Type: text/plain; charset=utf-8');
+    echo 'This address receives messages from Stripe (POST only). It is working if you see this.'; exit;
+}
 if ($path === '/stripe/webhook' && $method === 'POST') {
     $payload = (string) file_get_contents('php://input');
     $event = stripe_verify_webhook($payload, (string) ($_SERVER['HTTP_STRIPE_SIGNATURE'] ?? ''), (string) $GLOBALS['cfg']['stripe_webhook_secret']);
