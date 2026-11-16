@@ -30,5 +30,6 @@ require __DIR__ . '/migrate.php';
 require __DIR__ . '/stripe.php';
 require __DIR__ . '/booking.php';
 require __DIR__ . '/enrol.php';
+require __DIR__ . '/geo.php';
 
 auto_migrate();

@@ -10,19 +10,29 @@ $user = current_user();
 if (PHP_SAPI === 'cli-server' && $path !== '/' && is_file(__DIR__ . $path)) { return false; }
 
 if ($path === '/' && $method === 'GET') {
-    $clubs = q("SELECT slug, name, town, county, postcode, sponsored_partner, crest_path, EXISTS(SELECT 1 FROM club_crests k WHERE k.club_id = clubs.id) AS has_crest FROM clubs WHERE status = 'active' OR sponsored_partner ORDER BY name")->fetchAll();
+    $clubs = q("SELECT id, slug, name, town, county, postcode, lat, lng, sponsored_partner, crest_path, EXISTS(SELECT 1 FROM club_crests k WHERE k.club_id = clubs.id) AS has_crest FROM clubs WHERE status = 'active' OR sponsored_partner ORDER BY name")->fetchAll();
     $crest = fn(array $c, int $w) => $c['crest_path'] ? '<img src="/assets/' . h($c['crest_path']) . '" alt="" width="' . $w . '">' : ($c['has_crest'] ? '<img src="/crest/' . h($c['slug']) . '" alt="" width="' . $w . '">' : '');
     $partner = null; foreach ($clubs as $c) { if ($c['sponsored_partner']) { $partner = $c; break; } }
     $b = '<section class="hero"><h1>Book cricket nets and coaches near you</h1><p>Find a net by the hour, add a coach for a session.</p><div class="crease"></div>'
        . ($partner ? '<a class="partner" href="/club/' . h($partner['slug']) . '">' . $crest($partner, 52) . '<div><span>Sponsored partner</span><strong>' . h($partner['name']) . '</strong></div></a>' : '')
        . '</section>';
-    $b .= '<h2>Find a club</h2><div class="card"><label>Town or club<input type="search" id="club-filter" placeholder="e.g. Penshurst" autocomplete="off"></label></div><ul class="clubs" id="club-list">';
+    $pcIn = trim((string) ($_GET['pc'] ?? '')); $within = (string) ($_GET['within'] ?? ''); $geoMsg = null; $searched = false;
+    if ($pcIn !== '') {
+        $searched = true;
+        [$clubs, $geoMsg] = clubs_near($clubs, $pcIn, in_array($within, ['5', '10', '25', '50'], true) ? (float) $within : null);
+    }
+    $b .= '<h2>Find a club</h2><form method="get" action="/" class="card"><div class="row"><label>Your postcode<input name="pc" value="' . h($pcIn) . '" placeholder="e.g. TN11 8XX" autocomplete="postal-code" maxlength="10"></label>'
+        . '<label>Within<select name="within"><option value="">Any distance</option>' . implode('', array_map(fn($m) => '<option value="' . $m . '"' . ($within === (string) $m ? ' selected' : '') . '>' . $m . ' miles</option>', [5, 10, 25, 50])) . '</select></label>'
+        . '<button type="submit">Find near me</button></div>'
+        . '<p class="muted">We use your postcode only to work out distances. It is looked up with postcodes.io and not stored.</p></form>'
+        . ($geoMsg ? '<div class="notice err" role="status">' . h($geoMsg) . '</div>' : '')
+        . '<div class="card"><label>Town or club<input type="search" id="club-filter" placeholder="e.g. Penshurst" autocomplete="off"></label></div><ul class="clubs" id="club-list">';
     foreach ($clubs as $c) {
         $b .= '<li data-find="' . h(strtolower($c['name'] . ' ' . $c['town'] . ' ' . $c['county'] . ' ' . (string) $c['postcode'])) . '"><a href="/club/' . h($c['slug']) . '">' . $crest($c, 44)
             . '<span><strong>' . h($c['name']) . '</strong><br>' . h($c['town']) . ', ' . h($c['county']) . ' ' . h((string) $c['postcode']) . '</span>'
-            . ($c['sponsored_partner'] ? '<em class="tag">Sponsored partner</em>' : '') . '</a></li>';
+            . (isset($c['miles']) ? '<em class="tag">' . number_format($c['miles'], 1) . ' miles</em>' : ($c['sponsored_partner'] ? '<em class="tag">Sponsored partner</em>' : '')) . '</a></li>';
     }
-    page('Find a net', $b . '</ul><p class="muted" id="club-none" hidden>No clubs match. More clubs are joining soon.</p><p class="muted">Is your club missing? <a href="/enrol">Enrol your club</a>.</p>');
+    page('Find a net', $b . '</ul>' . ($searched && !$geoMsg && !$clubs ? '<p class="muted">No clubs within that distance yet. More clubs are joining soon.</p>' : '') . '<p class="muted" id="club-none" hidden>No clubs match. More clubs are joining soon.</p><p class="muted">Is your club missing? <a href="/enrol">Enrol your club</a>.</p>');
 }
 
 
