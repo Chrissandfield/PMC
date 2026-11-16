@@ -19,3 +19,6 @@
     wrap.appendChild(btn);
   });
 })();
+
+(function(){var f=document.getElementById('club-filter');if(!f)return;var items=document.querySelectorAll('#club-list li'),none=document.getElementById('club-none');
+f.addEventListener('input',function(){var q=f.value.trim().toLowerCase(),n=0;items.forEach(function(li){var ok=!q||li.getAttribute('data-find').indexOf(q)>-1;li.hidden=!ok;if(ok)n++;});if(none)none.hidden=n>0;});})();

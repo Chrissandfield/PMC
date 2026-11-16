@@ -11,13 +11,18 @@ if (PHP_SAPI === 'cli-server' && $path !== '/' && is_file(__DIR__ . $path)) { re
 
 if ($path === '/' && $method === 'GET') {
     $clubs = q("SELECT slug, name, town, county, postcode, sponsored_partner, crest_path, EXISTS(SELECT 1 FROM club_crests k WHERE k.club_id = clubs.id) AS has_crest FROM clubs WHERE status = 'active' OR sponsored_partner ORDER BY name")->fetchAll();
-    $b = '<h1>Find a cricket net</h1><p class="lead">Hire a net by the hour and add a coach for a session.</p><ul class="clubs">';
+    $crest = fn(array $c, int $w) => $c['crest_path'] ? '<img src="/assets/' . h($c['crest_path']) . '" alt="" width="' . $w . '">' : ($c['has_crest'] ? '<img src="/crest/' . h($c['slug']) . '" alt="" width="' . $w . '">' : '');
+    $partner = null; foreach ($clubs as $c) { if ($c['sponsored_partner']) { $partner = $c; break; } }
+    $b = '<section class="hero"><h1>Book cricket nets and coaches near you</h1><p>Find a net by the hour, add a coach for a session.</p><div class="crease"></div>'
+       . ($partner ? '<a class="partner" href="/club/' . h($partner['slug']) . '">' . $crest($partner, 52) . '<div><span>Sponsored partner</span><strong>' . h($partner['name']) . '</strong></div></a>' : '')
+       . '</section>';
+    $b .= '<h2>Find a club</h2><div class="card"><label>Town or club<input type="search" id="club-filter" placeholder="e.g. Penshurst" autocomplete="off"></label></div><ul class="clubs" id="club-list">';
     foreach ($clubs as $c) {
-        $b .= '<li><a href="/club/' . h($c['slug']) . '">' . ($c['crest_path'] ? '<img src="/assets/' . h($c['crest_path']) . '" alt="" width="40" height="41">' : ($c['has_crest'] ? '<img src="/crest/' . h($c['slug']) . '" alt="" width="40" height="40">' : ''))
+        $b .= '<li data-find="' . h(strtolower($c['name'] . ' ' . $c['town'] . ' ' . $c['county'] . ' ' . (string) $c['postcode'])) . '"><a href="/club/' . h($c['slug']) . '">' . $crest($c, 44)
             . '<span><strong>' . h($c['name']) . '</strong><br>' . h($c['town']) . ', ' . h($c['county']) . ' ' . h((string) $c['postcode']) . '</span>'
             . ($c['sponsored_partner'] ? '<em class="tag">Sponsored partner</em>' : '') . '</a></li>';
     }
-    page('Find a net', $b . '</ul>');
+    page('Find a net', $b . '</ul><p class="muted" id="club-none" hidden>No clubs match. More clubs are joining soon.</p><p class="muted">Is your club missing? <a href="/enrol">Enrol your club</a>.</p>');
 }
 
 
