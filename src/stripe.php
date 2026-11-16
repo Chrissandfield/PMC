@@ -83,7 +83,7 @@ function stripe_create_club_account(array $club): array
         'controller' => [
             'fees'              => ['payer' => 'account'],
             'losses'            => ['payments' => 'stripe'],
-            'stripe_dashboard'  => ['type' => 'express'],
+            'stripe_dashboard'  => ['type' => 'full'],
             'requirement_collection' => 'stripe',
         ],
         'capabilities' => ['card_payments' => ['requested' => true], 'transfers' => ['requested' => true]],
