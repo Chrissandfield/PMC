@@ -15,6 +15,9 @@ const TOKEN_DAYS = 14;
 const REMINDER_AFTER_DAYS = 3;
 const ADMIN_NOTICE_EMAIL = 'hello@playmorecricket.com';
 
+const CREST_MAX_BYTES = 1048576;
+const CREST_TYPES = ['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/webp' => 'webp'];
+
 const QUALIFICATIONS = ['', 'ECB Support Coach (Level 1)', 'ECB Foundation Coach (Level 2)', 'ECB Core Coach (Level 3)', 'ECB Advanced Coach (Level 4)', 'ECB Specialist Coach (Level 5)', 'Other'];
 
 function slugify(string $name): string
@@ -28,6 +31,20 @@ function unique_slug(string $name): string
     $base = slugify($name); $slug = $base; $i = 2;
     while (q('SELECT 1 FROM clubs WHERE slug = ?', [$slug])->fetch()) { $slug = $base . '-' . $i++; }
     return $slug;
+}
+
+/** Check an uploaded crest. Returns [error|null, mime|null, base64|null]. No file at all is fine. */
+function crest_from_upload(?array $f): array
+{
+    if (!$f || ($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) { return [null, null, null]; }
+    if ($f['error'] !== UPLOAD_ERR_OK || !is_uploaded_file($f['tmp_name']) && getenv('PMC_TEST_UPLOADS') !== '1') { return ['The crest could not be uploaded. Please try a smaller file.', null, null]; }
+    if ($f['size'] > CREST_MAX_BYTES) { return ['The crest is too big. Please use a picture under 1 MB.', null, null]; }
+    $raw = (string) file_get_contents($f['tmp_name']);
+    $info = @getimagesizefromstring($raw);
+    if (!$info || !isset(CREST_TYPES[$info['mime']]) || $info[0] < 16 || $info[1] < 16 || $info[0] > 4000 || $info[1] > 4000) {
+        return ['The crest must be a PNG, JPG or WebP picture (not a PDF or Word file).', null, null];
+    }
+    return [null, $info['mime'], base64_encode($raw)];
 }
 
 function pence_from(string $pounds): ?int
@@ -114,6 +131,9 @@ function enrol_create(array $in): array
     $machine = !empty($in['machine']); $mprice = $machine ? pence_from(trim((string) ($in['mprice'] ?? ''))) : null;
     if ($machine && ($mprice === null || $mprice <= 0)) { $err[] = 'Add the bowling machine price per hour.'; }
     $mcoach = !empty($in['mcoach']);
+    [$crestErr, $crestMime, $crestB64] = crest_from_upload($_FILES['crest'] ?? null);
+    if ($crestErr) { $err[] = $crestErr; }
+    if ($crestB64 !== null && empty($in['crest_ok'])) { $err[] = 'Please tick the box confirming the club may use the crest and gives us permission to display it.'; }
 
     $hours = [];
     for ($d = 0; $d < 7; $d++) {
@@ -143,6 +163,7 @@ function enrol_create(array $in): array
        $cname, $cdetail, $sname, $semail, $policy === 'link' ? $plink : 'Written policy to be sent to hello@playmorecricket.com', now_utc()]);
     $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
 
+    if ($crestB64 !== null) { q('INSERT INTO club_crests (club_id, mime, data_b64, permission_given_by) VALUES (?,?,?,?)', [$clubId, $crestMime, $crestB64, $cname]); }
     $outdoorExists = (bool) array_filter($groups, fn($g) => $g['type'] === 'outdoor');
     foreach (['outdoor', 'indoor'] as $type) {
         $n = 0;
@@ -177,7 +198,7 @@ function enrol_create(array $in): array
         send_email($cdetail, 'We have received ' . $club . "'s application", "Hello $cname,\n\nThank you for applying to list $club on PlayMoreCricket.\n\n"
             . "We have emailed $sname, your safeguarding officer, a private link to confirm the club's safeguarding policy and your coaches' DBS checks. "
             . "Once that is done we will review your application and let you know when the club is live.\n\n"
-            . ($policy === 'attached' ? "Please also email your written safeguarding policy and your club crest to hello@playmorecricket.com.\n\n" : "Please also email your club crest to hello@playmorecricket.com.\n\n")
+            . ($policy === 'attached' ? "Please also email your written safeguarding policy to hello@playmorecricket.com.\n\n" : '') . ($crestB64 === null ? "Please also email your club crest or logo to hello@playmorecricket.com, or we will add it later.\n\n" : '')
             . 'PlayMoreCricket');
     }
     send_email(ADMIN_NOTICE_EMAIL, 'New club application: ' . $club, "$club ($town) has applied. Review it in /admin: " . $GLOBALS['cfg']['app_url'] . "/admin\n");
@@ -221,13 +242,15 @@ function enrol_form_html(array $old = []): string
     $v = fn(string $k, $d = '') => h((string) ($old[$k] ?? $d));
     $sel = fn(string $name, array $opts, string $cur) => '<select name="' . $name . '">' . implode('', array_map(fn($o) => '<option value="' . h($o) . '"' . ($o === $cur ? ' selected' : '') . '>' . h($o === '' ? 'Choose one' : ucfirst($o)) . '</option>', $opts)) . '</select>';
     $b = '<h1>Enrol your club</h1><p class="lead">Tell us about your nets, opening times and coaches. We email your safeguarding officer a private link to confirm the club\'s policy and each coach\'s DBS check, then we review and list your club.</p>'
-       . '<form method="post" action="/enrol" class="enrol">' . csrf_field()
+       . '<form method="post" action="/enrol" class="enrol" enctype="multipart/form-data">' . csrf_field()
        . '<div style="position:absolute;left:-9999px" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>';
     $b .= '<fieldset class="card"><legend>Your club</legend>'
        . '<label>Club name<input name="club" maxlength="160" value="' . $v('club') . '" required></label>'
        . '<label>Town or village<input name="town" maxlength="120" value="' . $v('town') . '" required></label>'
        . '<label>County<input name="county" maxlength="80" value="' . $v('county', 'Kent') . '"></label>'
        . '<label>Postcode<input name="postcode" maxlength="12" value="' . $v('postcode') . '"></label>'
+       . '<label>Club crest or logo (optional)<input type="file" name="crest" accept="image/png,image/jpeg,image/webp"><span class="muted">PNG, JPG or WebP, under 1 MB. It appears on your club page once you go live.</span></label>'
+       . '<label class="check"><input type="checkbox" name="crest_ok" value="1"> I confirm the club owns this crest or logo, or has the right to use it, and gives PlayMoreCricket permission to display it on the club\'s page and in the club list for as long as the club is listed.</label>'
        . '<label>Key contact name<input name="cname" maxlength="160" value="' . $v('cname') . '" required></label>'
        . '<label>Key contact email (or phone)<input name="cdetail" maxlength="190" value="' . $v('cdetail') . '" required></label></fieldset>';
     $b .= '<fieldset class="card"><legend>Net hire</legend><p class="muted">One line for each kind of net. For example 3 outdoor nets and 1 indoor net are two lines. Visitors choose indoor or outdoor and we give them a free net of that type. Leave unused lines empty.</p>';

@@ -233,4 +233,13 @@ CREATE TABLE schema_migrations (
   name       VARCHAR(120) NOT NULL PRIMARY KEY,
   applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications');
+CREATE TABLE club_crests (
+  club_id   BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  mime      VARCHAR(30) NOT NULL,
+  data_b64  MEDIUMTEXT NOT NULL,
+  uploaded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  permission_given_by VARCHAR(160) NOT NULL,
+  CONSTRAINT crest_club_fk FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests');

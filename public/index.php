@@ -10,10 +10,10 @@ $user = current_user();
 if (PHP_SAPI === 'cli-server' && $path !== '/' && is_file(__DIR__ . $path)) { return false; }
 
 if ($path === '/' && $method === 'GET') {
-    $clubs = q("SELECT slug, name, town, county, postcode, sponsored_partner, crest_path FROM clubs WHERE status = 'active' OR sponsored_partner ORDER BY name")->fetchAll();
+    $clubs = q("SELECT slug, name, town, county, postcode, sponsored_partner, crest_path, EXISTS(SELECT 1 FROM club_crests k WHERE k.club_id = clubs.id) AS has_crest FROM clubs WHERE status = 'active' OR sponsored_partner ORDER BY name")->fetchAll();
     $b = '<h1>Find a cricket net</h1><p class="lead">Hire a net by the hour and add a coach for a session.</p><ul class="clubs">';
     foreach ($clubs as $c) {
-        $b .= '<li><a href="/club/' . h($c['slug']) . '">' . ($c['crest_path'] ? '<img src="/assets/' . h($c['crest_path']) . '" alt="" width="40" height="41">' : '')
+        $b .= '<li><a href="/club/' . h($c['slug']) . '">' . ($c['crest_path'] ? '<img src="/assets/' . h($c['crest_path']) . '" alt="" width="40" height="41">' : ($c['has_crest'] ? '<img src="/crest/' . h($c['slug']) . '" alt="" width="40" height="40">' : ''))
             . '<span><strong>' . h($c['name']) . '</strong><br>' . h($c['town']) . ', ' . h($c['county']) . ' ' . h((string) $c['postcode']) . '</span>'
             . ($c['sponsored_partner'] ? '<em class="tag">Sponsored partner</em>' : '') . '</a></li>';
     }
@@ -396,6 +396,13 @@ if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})(/cancel)?$#', $path, $bm)) {
     page('Your booking', $body);
 }
 
+if (preg_match('#^/crest/([a-z0-9-]+)$#', $path, $m)) {
+    $row = q("SELECT k.mime, k.data_b64 FROM club_crests k JOIN clubs c ON c.id = k.club_id WHERE c.slug = ? AND (c.status = 'active' OR c.sponsored_partner)", [$m[1]])->fetch();
+    if (!$row || !isset(CREST_TYPES[$row['mime']])) { http_response_code(404); exit; }
+    header('Content-Type: ' . $row['mime']); header('X-Content-Type-Options: nosniff'); header('Cache-Control: public, max-age=86400');
+    echo base64_decode($row['data_b64']); exit;
+}
+
 if ($path === '/enrol') {
     if ($method === 'POST') {
         csrf_check();
@@ -564,7 +571,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     // Club page with the week diary
     $monday = week_start($_GET['week'] ?? null);
     expire_stale();
-    $b = '<div class="clubhead">' . ($club['crest_path'] ? '<img src="/assets/' . h($club['crest_path']) . '" alt="" width="56" height="58">' : '')
+    $b = '<div class="clubhead">' . ($club['crest_path'] ? '<img src="/assets/' . h($club['crest_path']) . '" alt="" width="56" height="58">' : (q('SELECT 1 FROM club_crests WHERE club_id = ?', [$club['id']])->fetch() ? '<img src="/crest/' . h($club['slug']) . '" alt="" width="56" height="56">' : ''))
        . '<div><h1>' . h($club['name']) . '</h1><p class="muted">' . h($club['town']) . ', ' . h($club['county']) . ' ' . h((string) $club['postcode']) . '</p></div></div>';
     $coaches = club_coaches((int) $club['id']);
     if ($coaches) {
