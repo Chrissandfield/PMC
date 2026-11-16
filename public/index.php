@@ -99,25 +99,46 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
     if ($path === '/admin/users/update' && $method === 'POST') {
         csrf_check();
         $id = (int) ($_POST['id'] ?? 0); $email = trim((string) ($_POST['email'] ?? '')); $name = trim((string) ($_POST['name'] ?? '')); $pw = (string) ($_POST['password'] ?? '');
+        $role = (string) ($_POST['role'] ?? ''); $clubId = (int) ($_POST['club_id'] ?? 0); $coachId = (int) ($_POST['coach_id'] ?? 0);
         $target = q('SELECT * FROM users WHERE id = ?', [$id])->fetch();
         if (!$target) { flash('That login does not exist.', true); redirect('/admin'); }
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || ($pw !== '' && strlen($pw) < 10)) {
-            flash('Enter a name, a valid email, and either leave the password blank or use at least 10 characters.', true); redirect('/admin/users/edit?id=' . $id);
+        $back = '/admin/users/edit?id=' . $id;
+        $club = $clubId ? q('SELECT id FROM clubs WHERE id = ?', [$clubId])->fetch() : null;
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || ($pw !== '' && strlen($pw) < 10) || !in_array($role, ['admin', 'club_contact', 'coach'], true) || ($role !== 'admin' && !$club)) {
+            flash('Enter a name, a valid email, a role, a club (for non-admins), and either leave the password blank or use at least 10 characters.', true); redirect($back);
         }
-        if (q('SELECT 1 FROM users WHERE email = ? AND id <> ?', [$email, $id])->fetch()) { flash('Another login already uses that email.', true); redirect('/admin/users/edit?id=' . $id); }
-        q('UPDATE users SET name = ?, email = ? WHERE id = ?', [$name, $email, $id]);
+        if (q('SELECT 1 FROM users WHERE email = ? AND id <> ?', [$email, $id])->fetch()) { flash('Another login already uses that email.', true); redirect($back); }
+        if ($target['role'] === 'admin' && $role !== 'admin' && (int) q("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")->fetch()['n'] < 2) {
+            flash('This is the only administrator, so its role cannot be changed. Make another administrator first.', true); redirect($back);
+        }
+        $newClub = $role === 'admin' ? null : $clubId;
+        q('UPDATE users SET name = ?, email = ?, role = ?, club_id = ? WHERE id = ?', [$name, $email, $role, $newClub, $id]);
         if ($pw !== '') { q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($pw, PASSWORD_DEFAULT), $id]); }
-        audit((int) $user['id'], 'user_updated', $target['email'] . ' -> ' . $email . ($pw !== '' ? ' (password reset)' : ''));
+        // A coach login stays linked to one coach record at the same club. Any other change removes the link.
+        if ($role !== 'coach' || (int) $target['club_id'] !== (int) $newClub) { q('UPDATE coaches SET user_id = NULL WHERE user_id = ?', [$id]); }
+        if ($role === 'coach' && $coachId) {
+            q('UPDATE coaches SET user_id = NULL WHERE user_id = ? AND id <> ?', [$id, $coachId]);
+            q('UPDATE coaches SET user_id = ? WHERE id = ? AND club_id = ? AND (user_id IS NULL OR user_id = ?)', [$id, $coachId, $clubId, $id]);
+        }
+        audit((int) $user['id'], 'user_updated', $target['email'] . ' (' . $target['role'] . ') -> ' . $email . ' (' . $role . ')' . ($pw !== '' ? ' password reset' : ''));
         flash('Login updated for ' . $name . '.'); redirect('/admin');
     }
     if ($path === '/admin/users/edit') {
         $id = (int) ($_GET['id'] ?? 0);
-        $target = q('SELECT id, name, email, role FROM users WHERE id = ?', [$id])->fetch();
+        $target = q('SELECT id, name, email, role, club_id FROM users WHERE id = ?', [$id])->fetch();
         if (!$target) { flash('That login does not exist.', true); redirect('/admin'); }
-        page('Edit login', '<h1>Edit login</h1><p class="muted">Role: ' . h($target['role']) . '. To change a role or club, ask Claude.</p>'
-            . '<form method="post" action="/admin/users/update" class="card narrow">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $target['id'] . '">'
+        $copts = '<option value="0">(none)</option>';
+        foreach (q('SELECT c.id, c.name, c.club_id, c.user_id, cl.name AS club FROM coaches c JOIN clubs cl ON cl.id = c.club_id WHERE c.active AND (c.user_id IS NULL OR c.user_id = ?) ORDER BY cl.name, c.name', [$id])->fetchAll() as $c) {
+            $copts .= '<option value="' . (int) $c['id'] . '"' . ((int) $c['user_id'] === $id ? ' selected' : '') . '>' . h($c['name']) . ' (' . h($c['club']) . ')</option>';
+        }
+        $ropts = ''; foreach (['club_contact' => 'Club contact', 'coach' => 'Coach', 'admin' => 'Administrator'] as $k => $lbl) { $ropts .= '<option value="' . $k . '"' . ($target['role'] === $k ? ' selected' : '') . '>' . $lbl . '</option>'; }
+        $clubopts = ''; foreach (q('SELECT id, name FROM clubs ORDER BY name')->fetchAll() as $c) { $clubopts .= '<option value="' . (int) $c['id'] . '"' . ((int) $target['club_id'] === (int) $c['id'] ? ' selected' : '') . '>' . h($c['name']) . '</option>'; }
+        page('Edit login', '<h1>Edit login</h1><form method="post" action="/admin/users/update" class="card narrow">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $target['id'] . '">'
             . '<label>Name<input name="name" value="' . h($target['name']) . '" required></label>'
             . '<label>Email<input type="email" name="email" value="' . h($target['email']) . '" required autocomplete="off"></label>'
+            . '<label>Role<select name="role">' . $ropts . '</select></label>'
+            . '<label>Club (ignored for administrators)<select name="club_id">' . $clubopts . '</select></label>'
+            . '<label>Coach record to link (coaches only, must be at the chosen club)<select name="coach_id">' . $copts . '</select></label>'
             . '<label>New password (leave blank to keep the current one)<input type="password" name="password" minlength="10" autocomplete="new-password"></label>'
             . '<button type="submit">Save</button> <a href="/admin">Cancel</a></form>');
     }
