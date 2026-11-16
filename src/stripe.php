@@ -74,10 +74,10 @@ function stripe_call(string $method, string $path, array $data = [], ?string $ac
     return $json;
 }
 
-/** Create the club's Express account (Stripe collects its own fees; Stripe covers negative balances). */
+/** Create the club's connected account (full dashboard; club bears Stripe's fees; Stripe covers negative balances). */
 function stripe_create_club_account(array $club): array
 {
-    return stripe_call('POST', '/v1/accounts', [
+    $params = [
         'country' => 'GB',
         'email'   => $club['email'],
         'controller' => [
@@ -89,7 +89,9 @@ function stripe_create_club_account(array $club): array
         'capabilities' => ['card_payments' => ['requested' => true], 'transfers' => ['requested' => true]],
         'business_profile' => ['name' => $club['name'], 'url' => $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug']],
         'metadata' => ['club_id' => $club['id'], 'club_slug' => $club['slug']],
-    ], null, 'club-account-' . $club['id']);
+    ];
+    // Key includes a hash of the parameters, so a changed request is never rejected as a key clash.
+    return stripe_call('POST', '/v1/accounts', $params, null, 'club-account-' . $club['id'] . '-' . substr(sha1(json_encode($params)), 0, 12));
 }
 
 /** A one-off link that sends the club's contact to Stripe's sign-up form. */
