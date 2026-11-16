@@ -27,3 +27,6 @@ fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}
 .daylist{display:none}.daytabs{display:flex;gap:6px;flex-wrap:wrap}.daytabs a{padding:6px 9px;border:1px solid var(--line);border-radius:8px;text-decoration:none;background:var(--card)}.daytabs a.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .slots{list-style:none;padding:0;display:grid;gap:6px}.slots li{padding:10px 12px;border-radius:8px;border:1px solid var(--line)}.slots li.free{background:var(--free)}.slots li.taken{background:var(--taken)}
 @media (max-width:700px){.daylist{display:block}.scroll,.weeknav+.scroll{display:none}}
+.pw-wrap{display:flex;gap:6px;align-items:stretch}.pw-wrap input{flex:1;min-width:0}
+.pw-toggle{background:transparent;color:var(--fg,inherit);border:1px solid var(--line);border-radius:8px;padding:0 12px;cursor:pointer;font:inherit;font-size:.9rem}
+.pw-toggle:hover,.pw-toggle:focus-visible{border-color:var(--accent)}

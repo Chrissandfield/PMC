@@ -36,6 +36,6 @@ function page(string $title, string $body): never
     if ($flash) {
         echo '<div class="notice' . ($flash['error'] ? ' err' : '') . '" role="status">' . h($flash['msg']) . '</div>';
     }
-    echo $body . '<footer class="foot">PlayMoreCricket · Find a net by the hour, add a coach for a session.</footer></div></body></html>';
+    echo $body . '<footer class="foot">PlayMoreCricket · Find a net by the hour, add a coach for a session.</footer></div><script src="/assets/app.js" defer></script></body></html>';
     exit;
 }
