@@ -83,6 +83,7 @@ function visitor_reserve(array $club, array $net, string $localStart, array $in)
     if ($kind === 'coach') {
         $coach = q('SELECT * FROM coaches WHERE id = ? AND club_id = ? AND active', [(int) ($in['coach_id'] ?? 0), $club['id']])->fetch() ?: null;
         if (!$coach) { return [false, 'Please choose a coach.', null]; }
+        if ($junior && !(int) $coach['dbs_checked']) { return [false, 'Junior sessions can only be booked with a coach whose DBS check has been confirmed by the club. ' . $coach['name'] . ' does not have a confirmed check yet.', null]; }
         $avail = q('SELECT 1 FROM coach_availability WHERE coach_id = ? AND starts_at = ?', [$coach['id'], utc_string($start)])->fetch();
         $busy  = q('SELECT 1 FROM bookings WHERE coach_id = ? AND starts_at = ? AND status IN ' . LIVE, [$coach['id'], utc_string($start)])->fetch();
         if (!$avail || $busy) { return [false, $coach['name'] . ' is not available at that time.', null]; }

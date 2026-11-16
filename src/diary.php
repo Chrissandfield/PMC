@@ -132,6 +132,7 @@ function staff_book(array $user, array $club, array $net, string $localStart, ar
             $coach = own_coach($user, $club);   // coaches book only as themselves
         }
         if (!$coach) { return [false, 'Choose a coach for this booking.']; }
+        if (!empty($in['junior']) && !(int) $coach['dbs_checked']) { return [false, 'Junior sessions can only be booked with a coach whose DBS check has been confirmed by the club. ' . $coach['name'] . ' does not have a confirmed check yet.']; }
         $busy = q('SELECT 1 FROM bookings WHERE coach_id = ? AND starts_at = ? AND status IN ' . LIVE, [$coach['id'], utc_string($start)])->fetch();
         if ($busy) { return [false, $coach['name'] . ' is already booked at that time.']; }
         if ($manager) {
