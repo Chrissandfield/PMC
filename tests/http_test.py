@@ -31,6 +31,7 @@ def book(c,start,**f):
     s,_,hd=req(c,'/club/penshurst-park/book',data); return s,hd.get('Location')
 
 anon=client()
+psql("UPDATE nets SET active=false WHERE id=2")  # these tests cover one outdoor net
 s,h,hd=req(anon,'/'); ok(s==200 and 'Penshurst Park Cricket Club' in h,'home lists the club')
 ok("default-src 'self'" in hd.get('Content-Security-Policy',''),'security headers present')
 s,h,_=req(anon,f'/club/penshurst-park?week={wk}'); ok(s==200 and 'Free' in h and 'Release' not in h and 'Book</a>' not in h,'anonymous sees Free, no Book/Release links')

@@ -38,6 +38,7 @@ def reserve(c,h,net=1,**f):
 def booking_row(ref=None,where=''):
     return psql(f"select reference||'|'||status||'|'||price_pence||'|'||commission_pence from bookings {where} order by id desc limit 1")
 
+psql("UPDATE nets SET active=false WHERE id=2")  # these tests cover one outdoor net; see t_types.py for several
 visitor=client(); jake=login('jake@test.local'); tre=login('trevor@test.local')
 s,h,_=req(visitor,f'/club/penshurst-park?week={d}')
 ok('/reserve' not in h and 'coming soon' in h,'before payments are connected: no Book links for visitors, "coming soon" shown')
@@ -56,7 +57,7 @@ _,h,_=req(tre,f'/coach/availability?week={d}')
 req(tre,'/coach/availability',{'csrf':csrf(h),'week':d,'slot[]':[f'{di}-16',f'{di}-17',f'{di}-18'],'repeat':'0'}) if False else None
 body=urllib.parse.urlencode([('csrf',csrf(h)),('week',d),('repeat','0')]+[('slot[]',f'{di}-{x}') for x in (16,17,18)]).encode(); req(tre,'/coach/availability',body)
 s,h,_=req(visitor,f'/club/penshurst-park?week={d}')
-ok('/reserve?net=1&amp;start='+start(10) in h or '/reserve?net=1&start='+start(10) in h,'visitors now see Book links on free hours')
+ok('/reserve?type=outdoor&amp;start='+start(10) in h or '/reserve?type=outdoor&start='+start(10) in h,'visitors now see Book links on free hours')
 ok('class="daylist"' in h and 'daytabs' in h,'phone-friendly day list is on the page')
 s,h,_=req(visitor,f'/club/penshurst-park/reserve?net=1&start={start(10)}'); ok(s==200 and 'Continue to payment' in h and 'Net hire only' in h,'reserve page loads')
 ok('Coaching session' not in h,'...and offers no coaching when no coach is free at 10:00')
@@ -68,14 +69,14 @@ bad=[('no terms',dict(accept_terms=None)),('bad email',dict(customer_email='nope
 for name,f in bad:
     if f is None: s,loc=reserve(visitor,22)
     else: s,loc=reserve(visitor,10 if 'coach' not in name else 16,**f)
-    ok('start=' in loc,'refused: '+name)
+    ok('start=' in loc or (name == 'closed hour' and 'checkout' not in loc),'refused: '+name)  # a closed hour has no free net, so the visitor goes back to the diary
 ok(psql('select count(*) from bookings')=='0','no booking rows created by invalid requests')
 
 # happy path: net hire
 s,loc=reserve(visitor,10); ok(s==303 and loc.startswith('https://checkout.stripe.test/pay/PMC-'),'valid reservation goes to the Stripe payment page')
 r=booking_row(); ref=r.split('|')[0]; ok(r.endswith('|pending_payment|1000|100'),'booking held pending payment: £10, commission 100p'); print('   ',r)
 ok(psql(f"select stripe_account_id||'|'||(expires_at is not null) from bookings where reference='{ref}'").startswith('acct_fake_'),'hold expiry and club account recorded')
-s,loc=reserve(client(),10); ok('start=' in loc,'a second visitor cannot take the held hour'); print('   ',flash(visitor,'/club/penshurst-park') or '')
+s,loc=reserve(client(),10); ok('checkout' not in loc and 'type=outdoor' in loc,'a second visitor cannot take the held hour (sent back to the diary)'); print('   ',flash(visitor,'/club/penshurst-park') or '')
 s,h,_=req(visitor,f'/club/penshurst-park?week={d}'); ok('BOOKED' in h,'held hour shows BOOKED to the public')
 
 # webhook
@@ -98,13 +99,13 @@ tkn=csrf(h)
 s,_,_=req(visitor,f'/booking/{ref}/cancel?t={tok}',{'csrf':'wrong','t':tok}); ok(s==400,'cancel without a valid form token is refused')
 s,_,hd=req(visitor,f'/booking/{ref}/cancel',{'csrf':tkn,'t':tok}); ok(booking_row().split('|')[1]=='refunded' and psql(f"select refund_pence from bookings where reference='{ref}'")=='1000','cancel more than 24h ahead: refunded in full')
 ok(psql("select count(*) from email_outbox where subject like 'Booking cancelled%'")=='2','cancellation emails sent to customer and club')
-s,h,_=req(visitor,f'/club/penshurst-park?week={d}'); ok('/reserve?net=1&amp;start='+start(10) in h or '/reserve?net=1&start='+start(10) in h,'the hour is free to book again')
+s,h,_=req(visitor,f'/club/penshurst-park?week={d}'); ok('/reserve?type=outdoor&amp;start='+start(10) in h or '/reserve?type=outdoor&start='+start(10) in h,'the hour is free to book again')
 
 # coach session with machine, commission-free period
 psql("update clubs set commission_free_until=(current_date + 30) where id=1")
 s,loc=reserve(visitor,16,kind='coach',coach_id='2',machine='1'); ok(s==303 and loc.startswith('https://checkout'),'coach + machine reservation accepted')
 r=booking_row(); ref2=r.split('|')[0]; ok(r.endswith('|pending_payment|4500|0'),'£33 coach + £12 machine = £45, no commission during the free period'); print('   ',r)
-s,loc=reserve(client(),16,kind='coach',coach_id='2'); ok('start=' in loc,'the same coach cannot be reserved twice for that hour')
+s,loc=reserve(client(),16,kind='coach',coach_id='2'); ok('checkout' not in loc,'the same coach cannot be reserved twice for that hour')
 s,b=webhook(completed(ref2,4500)); ok(b=='confirmed','coach booking confirmed')
 # under 24h: move the booking to 2 hours from now, try to cancel
 psql(f"update bookings set starts_at=now()+interval '2 hours', ends_at=now()+interval '3 hours' where reference='{ref2}'")

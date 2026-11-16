@@ -322,6 +322,13 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     $net = null; foreach ($nets as $n) { if ((int) $n['id'] === $netId) { $net = $n; } }
     $staff = can_staff($user, $club);
     $self = '/club/' . $club['slug'];
+    // Visitors choose a type of net (outdoor / indoor) and the system picks a free net of that type.
+    // Staff see one named net at a time.
+    $types = net_types($nets);
+    $type = null;
+    if (!$staff && $types) { $type = (string) ($_REQUEST['type'] ?? ''); if (!in_array($type, $types, true)) { $type = $types[0]; } }
+    $group = $type !== null ? nets_of_type($nets, $type) : ($net ? [$net] : []);
+    $typeQ = $type !== null ? 'type=' . $type : 'net=' . $netId;
 
     if ($sub === '/release' && $method === 'POST') {
         csrf_check();
@@ -333,6 +340,12 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     if ($sub === '/reserve') {
         if (!$net) { http_response_code(404); page('Not found', '<p>We could not find that net.</p>'); }
         $start = (string) ($_REQUEST['start'] ?? '');
+        if ($type !== null) {
+            $whenPick = DateTimeImmutable::createFromFormat('!Y-m-d\TH', $start, london());
+            $picked = $whenPick ? free_net_at($group, $whenPick) : null;
+            if (!$picked) { flash('Sorry, no ' . $type . ' net is free at that time. Please choose another hour.', true); redirect($self . '?type=' . $type); }
+            $net = $picked; $netId = (int) $net['id'];
+        }
         if (!online_booking_enabled($club)) { flash('Online booking is not open for this club yet. Please contact the club.', true); redirect($self); }
         if ($method === 'POST') {
             csrf_check();
@@ -340,7 +353,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
             if ($ok) { header('Location: ' . $url, true, 303); exit; }
             flash($msg, true);
             $_SESSION['reserve_old'] = array_intersect_key($_POST, array_flip(['kind', 'coach_id', 'machine', 'customer_name', 'customer_email', 'customer_phone', 'junior', 'child_first_name', 'child_age']));
-            redirect($self . '/reserve?net=' . $netId . '&start=' . urlencode($start));
+            redirect($self . '/reserve?' . $typeQ . '&start=' . urlencode($start));
         }
         $when = DateTimeImmutable::createFromFormat('!Y-m-d\TH', $start, london());
         if (!$when) { redirect($self); }
@@ -348,8 +361,8 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         $v = fn(string $k) => h((string) ($old[$k] ?? ''));
         [$freeC] = coaches_for_hour((int) $club['id'], $when);
         $co = ''; foreach ($freeC as $c) { $co .= '<option value="' . (int) $c['id'] . '"' . ((int) ($old['coach_id'] ?? 0) === (int) $c['id'] ? ' selected' : '') . '>' . h($c['name']) . ' · ' . h($c['qualification']) . ' · ' . money((int) $c['hourly_price_pence']) . '</option>'; }
-        $b = '<h1>Book ' . h($net['name']) . '</h1><p class="muted">' . h($when->format('l j F Y, H:i')) . ' · one hour · ' . h($club['name']) . '</p>'
-           . '<form method="post" class="card narrow">' . csrf_field() . '<input type="hidden" name="net" value="' . $netId . '"><input type="hidden" name="start" value="' . h($start) . '">'
+        $b = '<h1>Book ' . h($type !== null ? ucfirst($type) . ' net' : $net['name']) . '</h1><p class="muted">' . h($when->format('l j F Y, H:i')) . ' · one hour · ' . h($club['name']) . '</p>'
+           . '<form method="post" class="card narrow">' . csrf_field() . '<input type="hidden" name="net" value="' . $netId . '">' . ($type !== null ? '<input type="hidden" name="type" value="' . h($type) . '">' : '') . '<input type="hidden" name="start" value="' . h($start) . '">'
            . '<fieldset><legend>What would you like?</legend>'
            . '<label class="check"><input type="radio" name="kind" value="net"' . (($old['kind'] ?? 'net') === 'net' ? ' checked' : '') . '> Net hire only · ' . money((int) $net['nonmember_price_pence']) . '</label>'
            . ($freeC ? '<label class="check"><input type="radio" name="kind" value="coach"' . (($old['kind'] ?? '') === 'coach' ? ' checked' : '') . '> Coaching session (net included)</label>'
@@ -420,20 +433,58 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         }
         $b .= '</ul>';
     }
-    if (!$net) { page($club['name'], $b . '<p>No nets are listed yet.</p>'); }
-    $bk = week_bookings((int) $net['id'], $monday);
+    if (!$group) { page($club['name'], $b . '<p>No nets are listed yet.</p>'); }
     $avail = week_availability((int) $club['id'], $monday); $cbusy = week_coach_busy((int) $club['id'], $monday);
     $nFree = function (string $key) use ($avail, $cbusy): int { $n = 0; foreach ($avail as $cid => $hrs) { if (isset($hrs[$key]) && !isset($cbusy[$cid][$key])) { $n++; } } return $n; };
     $prev = $monday->modify('-7 days')->format('Y-m-d'); $next = $monday->modify('+7 days')->format('Y-m-d');
-    $b .= '<h2>' . h($net['name']) . ' diary</h2><p class="muted">Non-member ' . money((int) $net['nonmember_price_pence']) . '/hr'
-        . ($net['machine_price_pence'] !== null ? ' · machine +' . money((int) $net['machine_price_pence']) . ' with a coach' : '') . '</p>'
-        . '<p class="weeknav"><a href="' . $self . '?net=' . $netId . '&week=' . $prev . '">← Previous week</a> <strong>Week of ' . $monday->format('j M Y') . '</strong> <a href="' . $self . '?net=' . $netId . '&week=' . $next . '">Next week →</a></p>';
+    $nonmember = array_map(fn($n) => (int) $n['nonmember_price_pence'], $group);
+    $priceTxt = min($nonmember) === max($nonmember) ? money(min($nonmember)) : 'from ' . money(min($nonmember));
+    $machineNet = null; foreach ($group as $gn) { if ($gn['machine_price_pence'] !== null) { $machineNet = $gn; break; } }
+    // Choosers: visitors pick a type of net, staff pick a named net (only shown when there is a choice)
+    $tabs = '';
+    if ($type !== null && count($types) > 1) {
+        foreach ($types as $t) { $tabs .= '<a href="' . $self . '?type=' . $t . '&week=' . $monday->format('Y-m-d') . '"' . ($t === $type ? ' class="on" aria-current="page"' : '') . '>' . ucfirst($t) . '</a> '; }
+    } elseif ($type === null && count($nets) > 1) {
+        foreach ($nets as $tn) { $tabs .= '<a href="' . $self . '?net=' . (int) $tn['id'] . '&week=' . $monday->format('Y-m-d') . '"' . ((int) $tn['id'] === $netId ? ' class="on" aria-current="page"' : '') . '>' . h($tn['name']) . '</a> '; }
+    }
+    $title = $type !== null ? ucfirst($type) . ' nets' : $net['name'];
+    $b .= '<h2>' . h($title) . ' diary</h2>' . ($tabs !== '' ? '<p class="daytabs">' . $tabs . '</p>' : '')
+        . '<p class="muted">Non-member ' . $priceTxt . '/hr'
+        . ($machineNet ? ' · machine +' . money((int) $machineNet['machine_price_pence']) . ' with a coach' : '') . '</p>'
+        . '<p class="weeknav"><a href="' . $self . '?' . $typeQ . '&week=' . $prev . '">← Previous week</a> <strong>Week of ' . $monday->format('j M Y') . '</strong> <a href="' . $self . '?' . $typeQ . '&week=' . $next . '">Next week →</a></p>';
+    // Bookings and opening hours for every net in view
+    $bkn = []; $hn = [];
+    foreach ($group as $gn) {
+        $gid = (int) $gn['id']; $bkn[$gid] = week_bookings($gid, $monday);
+        for ($i = 0; $i < 7; $i++) { $hn[$gid][$i] = hours_for($gid, $monday->modify("+$i days")); }
+    }
+    // State of one hour: closed (no net open), taken (every open net booked) or free (with the first free net)
+    $cell = function (int $i, int $h, string $key) use ($group, $bkn, $hn): array {
+        $openAny = false; $firstTaken = null;
+        foreach ($group as $gn) {
+            $gid = (int) $gn['id']; $r = $hn[$gid][$i];
+            if (!$r || $h < $r[0] || $h >= $r[1]) { continue; }
+            $openAny = true;
+            if (!isset($bkn[$gid][$key])) { return ['free', null, $gn]; }
+            $firstTaken ??= $bkn[$gid][$key];
+        }
+        return $openAny ? ['taken', $firstTaken, null] : ['closed', null, null];
+    };
     $minH = 24; $maxH = 0; $open = [];
     for ($i = 0; $i < 7; $i++) {
-        $d = $monday->modify("+$i days"); $open[$i] = hours_for((int) $net['id'], $d);
+        $open[$i] = null;
+        foreach ($group as $gn) {
+            $r = $hn[(int) $gn['id']][$i];
+            if ($r) { $open[$i] = $open[$i] ? [min($open[$i][0], $r[0]), max($open[$i][1], $r[1])] : $r; }
+        }
         if ($open[$i]) { $minH = min($minH, $open[$i][0]); $maxH = max($maxH, $open[$i][1]); }
     }
     $manager = can_manage($user, $club); $mine = own_coach($user, $club); $now = new DateTimeImmutable('now', london()); $online = online_booking_enabled($club);
+    $link = function (DateTimeImmutable $d, int $h, array $freeNet) use ($self, $staff, $type, $netId): string {
+        $q = ($type !== null ? 'type=' . $type : 'net=' . (int) $freeNet['id']) . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h);
+        return $self . ($staff ? '/book' : '/reserve') . '?' . $q;
+    };
+    $coachTxt = function (string $key) use ($nFree): string { $n = $nFree($key); return $n ? '<small>' . $n . ' coach' . ($n > 1 ? 'es' : '') . '</small>' : ''; };
     $b .= '<div class="scroll"><table class="diary"><thead><tr><th></th>';
     for ($i = 0; $i < 7; $i++) { $b .= '<th>' . $monday->modify("+$i days")->format('D j') . '</th>'; }
     $b .= '</tr></thead><tbody>';
@@ -441,11 +492,10 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         $b .= '<tr><th>' . sprintf('%02d:00', $h) . '</th>';
         for ($i = 0; $i < 7; $i++) {
             $d = $monday->modify("+$i days"); $key = $d->format('Y-m-d') . ' ' . sprintf('%02d', $h);
-            $isOpen = $open[$i] && $h >= $open[$i][0] && $h < $open[$i][1];
             $past = $d->setTime($h, 0) <= $now;
-            if (!$isOpen) { $b .= '<td class="closed">–</td>'; continue; }
-            if (isset($bk[$key])) {
-                $x = $bk[$key];
+            [$state, $x, $freeNet] = $cell($i, $h, $key);
+            if ($state === 'closed') { $b .= '<td class="closed">–</td>'; continue; }
+            if ($state === 'taken') {
                 $label = $staff ? h(($x['booking_type'] === 'blocked' ? 'Blocked' : ($x['customer_name'] ?: ucfirst($x['booking_type'])))
                           . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'BOOKED';
                 $canRel = $staff && ($manager || ($mine && (int) $x['coach_id'] === (int) $mine['id']));
@@ -455,9 +505,8 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
                 }
                 $b .= '</td>';
             } elseif ($past) { $b .= '<td class="closed">–</td>'; }
-            elseif ($staff) { $b .= '<td class="free"><a href="' . $self . '/book?net=' . $netId . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h) . '">Book</a>' . ($nFree($key) ? '<br><small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</td>'; }
-            elseif ($online) { $b .= '<td class="free"><a href="' . $self . '/reserve?net=' . $netId . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h) . '">Book</a>' . ($nFree($key) ? '<br><small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</td>'; }
-            else { $b .= '<td class="free">Free' . ($nFree($key) ? '<br><small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</td>'; }
+            elseif ($staff || $online) { $b .= '<td class="free"><a href="' . $link($d, $h, $freeNet) . '">Book</a>' . ($coachTxt($key) !== '' ? '<br>' . $coachTxt($key) : '') . '</td>'; }
+            else { $b .= '<td class="free">Free' . ($coachTxt($key) !== '' ? '<br>' . $coachTxt($key) : '') . '</td>'; }
         }
         $b .= '</tr>';
     }
@@ -468,17 +517,19 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     $b .= '<div class="daylist"><p class="daytabs">';
     for ($i = 0; $i < 7; $i++) {
         $dd = $monday->modify("+$i days");
-        $b .= '<a href="' . $self . '?net=' . $netId . '&week=' . $monday->format('Y-m-d') . '&day=' . $dd->format('Y-m-d') . '"' . ($dd->format('Y-m-d') === $selDay->format('Y-m-d') ? ' class="on" aria-current="date"' : '') . '>' . $dd->format('D j') . '</a>';
+        $b .= '<a href="' . $self . '?' . $typeQ . '&week=' . $monday->format('Y-m-d') . '&day=' . $dd->format('Y-m-d') . '"' . ($dd->format('Y-m-d') === $selDay->format('Y-m-d') ? ' class="on" aria-current="date"' : '') . '>' . $dd->format('D j') . '</a>';
     }
     $b .= '</p><h3>' . h($selDay->format('l j F')) . '</h3><ul class="plain slots">';
     $si = (int) $selDay->format('N') - 1; $any = false;
     if ($open[$si]) {
         for ($h = $open[$si][0]; $h < $open[$si][1]; $h++) {
-            $key = $selDay->format('Y-m-d') . ' ' . sprintf('%02d', $h); $past = $selDay->setTime($h, 0) <= $now; if ($past) { continue; } $any = true;
-            $lab = sprintf('%02d:00', $h);
-            if (isset($bk[$key])) { $x = $bk[$key]; $b .= '<li class="taken"><strong>' . $lab . '</strong> ' . ($staff ? h(($x['booking_type'] === 'blocked' ? 'Blocked' : ($x['customer_name'] ?: ucfirst($x['booking_type']))) . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'BOOKED') . '</li>'; }
-            elseif ($staff || $online) { $b .= '<li class="free"><strong>' . $lab . '</strong> <a href="' . $self . ($staff ? '/book' : '/reserve') . '?net=' . $netId . '&start=' . $selDay->format('Y-m-d') . 'T' . sprintf('%02d', $h) . '">Book</a>' . ($nFree($key) ? ' <small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</li>'; }
-            else { $b .= '<li class="free"><strong>' . $lab . '</strong> Free' . ($nFree($key) ? ' <small>' . $nFree($key) . ' coach' . ($nFree($key) > 1 ? 'es' : '') . '</small>' : '') . '</li>'; }
+            $key = $selDay->format('Y-m-d') . ' ' . sprintf('%02d', $h); $past = $selDay->setTime($h, 0) <= $now; if ($past) { continue; }
+            [$state, $x, $freeNet] = $cell($si, $h, $key);
+            if ($state === 'closed') { continue; }
+            $any = true; $lab = sprintf('%02d:00', $h);
+            if ($state === 'taken') { $b .= '<li class="taken"><strong>' . $lab . '</strong> ' . ($staff ? h(($x['booking_type'] === 'blocked' ? 'Blocked' : ($x['customer_name'] ?: ucfirst($x['booking_type']))) . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'BOOKED') . '</li>'; }
+            elseif ($staff || $online) { $b .= '<li class="free"><strong>' . $lab . '</strong> <a href="' . $link($selDay, $h, $freeNet) . '">Book</a> ' . $coachTxt($key) . '</li>'; }
+            else { $b .= '<li class="free"><strong>' . $lab . '</strong> Free ' . $coachTxt($key) . '</li>'; }
         }
     }
     if (!$any) { $b .= '<li class="muted">Nothing available on this day.</li>'; }

@@ -39,6 +39,35 @@ function club_nets(int $clubId): array
     return q('SELECT * FROM nets WHERE club_id = ? AND active ORDER BY id', [$clubId])->fetchAll();
 }
 
+/** Types of net a club has ('outdoor', 'indoor'). A net of kind 'both' counts as each. */
+function net_types(array $nets): array
+{
+    $out = [];
+    foreach (['outdoor', 'indoor'] as $t) {
+        foreach ($nets as $n) { if ($n['kind'] === $t || $n['kind'] === 'both') { $out[] = $t; break; } }
+    }
+    return $out;
+}
+
+/** The nets that count as the given type. */
+function nets_of_type(array $nets, string $type): array
+{
+    return array_values(array_filter($nets, fn($n) => $n['kind'] === $type || $n['kind'] === 'both'));
+}
+
+/** First net in $group that is open and has no live booking at the given local start, or null. */
+function free_net_at(array $group, DateTimeImmutable $start): ?array
+{
+    $h = (int) $start->format('G');
+    foreach ($group as $n) {
+        $hrs = hours_for((int) $n['id'], $start);
+        if (!$hrs || $h < $hrs[0] || $h >= $hrs[1]) { continue; }
+        $taken = q('SELECT 1 FROM bookings WHERE net_id = ? AND starts_at = ? AND status IN ' . LIVE, [$n['id'], utc_string($start)])->fetch();
+        if (!$taken) { return $n; }
+    }
+    return null;
+}
+
 function club_coaches(int $clubId): array
 {
     return q('SELECT * FROM coaches WHERE club_id = ? AND active ORDER BY name', [$clubId])->fetchAll();
