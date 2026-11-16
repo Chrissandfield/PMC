@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 /*
  * Stripe Connect helpers (plain PHP, no libraries).
- * Model: each club has its own Express connected account. Customers pay the club directly
+ * Model: each club has its own full-dashboard connected account. Customers pay the club directly
  * (a "direct charge"). Stripe takes its card fee from the club, and PlayMoreCricket's commission
  * is added as an application fee. The secret key and webhook secret live in environment
  * variables on the host (PMC_STRIPE_SECRET, PMC_STRIPE_WEBHOOK_SECRET, or config.local.php on the server), never in the code.
@@ -74,24 +74,54 @@ function stripe_call(string $method, string $path, array $data = [], ?string $ac
     return $json;
 }
 
+/** Call a Stripe v2 API endpoint (JSON body). Used only to create connected accounts, which Stripe now wants via Accounts v2. */
+function stripe_call_v2(string $path, array $data, ?string $idempotencyKey = null): array
+{
+    if (stripe_fake()) { return stripe_fake_response('POST', $path, $data, null); }
+    $headers = ['Authorization: Bearer ' . stripe_secret(), 'Content-Type: application/json', 'Stripe-Version: 2026-10-28.preview'];
+    if ($idempotencyKey !== null) { $headers[] = 'Idempotency-Key: ' . $idempotencyKey; }
+    $ch = curl_init('https://api.stripe.com' . $path);
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST  => 'POST',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT        => 25,
+        CURLOPT_HTTPHEADER     => $headers,
+        CURLOPT_POSTFIELDS     => json_encode($data),
+    ]);
+    $body = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    if ($body === false) { $e = curl_error($ch); curl_close($ch); throw new RuntimeException('Stripe unreachable: ' . $e); }
+    curl_close($ch);
+    $json = json_decode($body, true);
+    if (!is_array($json) || $status >= 400) {
+        throw new RuntimeException('Stripe error ' . $status . ': ' . ($json['error']['message'] ?? substr((string) $body, 0, 300)));
+    }
+    return $json;
+}
+
 /** Create the club's connected account (full dashboard; club bears Stripe's fees; Stripe covers negative balances). */
 function stripe_create_club_account(array $club): array
 {
+    // Accounts v2: merchant account (direct charges), full Stripe dashboard, Stripe takes its card fee from the
+    // club, Stripe (not us) covers negative balances. Later steps (sign-up link, status, checkout) use v1 endpoints,
+    // which accept v2 account ids.
     $params = [
-        'country' => 'GB',
-        'email'   => $club['email'],
-        'controller' => [
-            'fees'              => ['payer' => 'account'],
-            'losses'            => ['payments' => 'stripe'],
-            'stripe_dashboard'  => ['type' => 'full'],
-            'requirement_collection' => 'stripe',
+        'contact_email' => $club['email'],
+        'display_name'  => $club['name'],
+        'dashboard'     => 'full',
+        'identity'      => ['country' => 'gb'],
+        'defaults'      => [
+            'responsibilities' => ['fees_collector' => 'stripe', 'losses_collector' => 'stripe'],
         ],
-        'capabilities' => ['card_payments' => ['requested' => true], 'transfers' => ['requested' => true]],
-        'business_profile' => ['name' => $club['name'], 'url' => $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug']],
-        'metadata' => ['club_id' => $club['id'], 'club_slug' => $club['slug']],
+        'configuration' => [
+            'merchant' => [
+                'capabilities' => ['card_payments' => ['requested' => true]],
+            ],
+        ],
+        'metadata' => ['club_id' => (string) $club['id'], 'club_slug' => (string) $club['slug']],
     ];
     // Key includes a hash of the parameters, so a changed request is never rejected as a key clash.
-    return stripe_call('POST', '/v1/accounts', $params, null, 'club-account-' . $club['id'] . '-' . substr(sha1(json_encode($params)), 0, 12));
+    return stripe_call_v2('/v2/core/accounts', $params, 'club-account-v2-' . $club['id'] . '-' . substr(sha1(json_encode($params)), 0, 12));
 }
 
 /** A one-off link that sends the club's contact to Stripe's sign-up form. */
@@ -171,7 +201,7 @@ function refund_allowed(DateTimeImmutable $startsAtUtc, ?DateTimeImmutable $nowU
 function stripe_fake_response(string $method, string $path, array $data, ?string $account): array
 {
     $app = $GLOBALS['cfg']['app_url'] ?? '';
-    if ($path === '/v1/accounts' && $method === 'POST') { return ['id' => 'acct_fake_' . ($data['metadata']['club_id'] ?? '0')]; }
+    if (($path === '/v1/accounts' || $path === '/v2/core/accounts') && $method === 'POST') { return ['id' => 'acct_fake_' . ($data['metadata']['club_id'] ?? '0')]; }
     if (str_starts_with($path, '/v1/accounts/')) { return ['id' => substr($path, 13), 'charges_enabled' => getenv('PMC_STRIPE_FAKE_CHARGES') !== '0', 'details_submitted' => true]; }
     if ($path === '/v1/account_links') { return ['url' => $app . '/stripe/return?club=' . ($GLOBALS['fake_club_slug'] ?? '')]; }
     if ($path === '/v1/checkout/sessions') {
