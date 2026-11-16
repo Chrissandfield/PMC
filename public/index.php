@@ -178,9 +178,16 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             . '<label>Commission %<input name="commission_pct" value="' . h((string) $c['commission_pct']) . '" inputmode="decimal" size="5"></label>'
             . '<label>No commission until<input type="date" name="commission_free_until" value="' . h((string) $c['commission_free_until']) . '"></label>'
             . '<button type="submit">Save</button></form>';
-        if (!empty($c['stripe_account_id'])) {
+        $has = !empty($c['stripe_account_id']);
+        $on = (int) $c['stripe_charges_enabled'] === 1;
+        $b .= '<div class="card row"><span class="muted">Payments: ' . ($has ? 'Stripe account ' . h((string) $c['stripe_account_id']) . ($on ? ' (payments on)' : ' (sign-up not finished)') : 'not set up yet') . '</span>';
+        if (!$on) {
+            $b .= '<form method="post" action="/stripe/connect">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
+                . '<button type="submit">' . ($has ? 'Continue Stripe sign-up' : 'Set up payments') . '</button></form>';
+        }
+        $b .= '</div>';
+        if ($has) {
             $b .= '<form method="post" action="/admin/stripe/disconnect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
-                . '<span class="muted">Stripe account ' . h((string) $c['stripe_account_id']) . ((int) $c['stripe_charges_enabled'] === 1 ? ' (payments on)' : ' (sign-up not finished)') . '</span>'
                 . '<label><input type="checkbox" name="confirm" value="1"> Disconnect (use before switching from sandbox to live)</label>'
                 . '<button type="submit">Disconnect payments</button></form>';
         }
