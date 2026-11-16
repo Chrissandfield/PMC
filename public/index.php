@@ -61,7 +61,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/confirm'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -106,6 +106,42 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         q('UPDATE clubs SET stripe_account_id = NULL, stripe_charges_enabled = ? WHERE id = ?', [0, $club['id']]);
         audit((int) $user['id'], 'stripe_disconnected', $club['slug'] . ' was ' . (string) $club['stripe_account_id']);
         flash('Payments disconnected for ' . $club['name'] . '. The club can now connect a new Stripe account.'); redirect('/admin');
+    }
+    if ($path === '/admin/applications/approve' && $method === 'POST') {
+        csrf_check();
+        $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+        if (!$club || $club['status'] !== 'pending') { flash('That application is not waiting for approval.', true); redirect('/admin'); }
+        if (empty($club['safeguarding_confirmed_at'])) { flash('Not approved: the safeguarding officer has not yet confirmed the club\'s safeguarding policy.', true); redirect('/admin'); }
+        $un = (int) q('SELECT COUNT(*) AS n FROM coaches WHERE club_id = ? AND NOT dbs_checked', [$club['id']])->fetch()['n'];
+        if ($un > 0 && empty($_POST['allow_unconfirmed'])) { flash($un . ' coach(es) have no confirmed DBS check. Tick the box to approve anyway (they will show with no DBS tick), or wait.', true); redirect('/admin'); }
+        q('UPDATE clubs SET status = ?, approved_at = ?, approved_by_user_id = ? WHERE id = ?', ['active', now_utc(), $user['id'], $club['id']]);
+        audit((int) $user['id'], 'club_approved', $club['slug']);
+        if (filter_var((string) $club['key_contact_detail'], FILTER_VALIDATE_EMAIL)) {
+            send_email((string) $club['key_contact_detail'], $club['name'] . ' is now live on PlayMoreCricket', "Hello " . $club['key_contact_name'] . ",\n\nYour club is now live: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug'] . "\n\nPlayMoreCricket");
+        }
+        flash($club['name'] . ' is now live.'); redirect('/admin');
+    }
+    if ($path === '/admin/applications/resend' && $method === 'POST') {
+        csrf_check();
+        $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+        if (!$club || $club['status'] !== 'pending') { flash('That application is not pending.', true); redirect('/admin'); }
+        $others = q('SELECT name FROM coaches WHERE club_id = ? AND NOT is_safeguarding_officer AND active', [$club['id']])->fetchAll(PDO::FETCH_COLUMN);
+        email_officer_link($club, 'officer', (string) $club['safeguarding_name'], (string) $club['safeguarding_contact'], make_token((int) $club['id'], 'officer', (string) $club['safeguarding_name'], (string) $club['safeguarding_contact']), $others);
+        audit((int) $user['id'], 'verification_resent', $club['slug']);
+        flash('A new confirmation link has been emailed to ' . $club['safeguarding_name'] . '.'); redirect('/admin');
+    }
+    if ($path === '/admin/applications/confirm' && $method === 'POST') {
+        csrf_check();
+        $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+        if (!$club || $club['status'] !== 'pending') { flash('That application is not pending.', true); redirect('/admin'); }
+        $note = trim((string) ($_POST['note'] ?? ''));
+        if ($note === '') { flash('Add a short note saying who confirmed it and how (for example "phone call with the officer, 3 Dec").', true); redirect('/admin'); }
+        q('UPDATE clubs SET safeguarding_confirmed_at = ?, safeguarding_confirmed_by = ? WHERE id = ?', [now_utc(), mb_substr('Administrator: ' . $note, 0, 160), $club['id']]);
+        foreach (q('SELECT id FROM coaches WHERE club_id = ? AND NOT dbs_checked', [$club['id']])->fetchAll() as $co) {
+            record_dbs_confirmation((int) $co['id'], null, mb_substr('Administrator: ' . $note, 0, 160), null, 'by_hand', (new DateTimeImmutable('today', london()))->format('Y-m-d'));
+        }
+        audit((int) $user['id'], 'safeguarding_confirmed_by_hand', $club['slug'] . ': ' . $note);
+        flash('Recorded as confirmed by hand.'); redirect('/admin');
     }
     if ($path === '/admin/users/update' && $method === 'POST') {
         csrf_check();
@@ -172,6 +208,25 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         . '<label>Coach record to link (coaches only)<select name="coach_id">' . $copts . '</select></label>'
         . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
         . '<button type="submit">Create login</button></form><h2>Clubs and commission</h2>';
+    send_due_reminders();
+    $pend = q("SELECT * FROM clubs WHERE status = 'pending' AND submitted_at IS NOT NULL ORDER BY submitted_at")->fetchAll();
+    if ($pend) {
+        $b .= '<h2>Club applications waiting</h2>';
+        foreach ($pend as $c) {
+            $co = q('SELECT name, dbs_checked, dbs_method, dbs_confirmed_by, dbs_checked_on FROM coaches WHERE club_id = ? ORDER BY id', [$c['id']])->fetchAll();
+            $b .= '<div class="card"><strong>' . h($c['name']) . '</strong> <span class="muted">' . h($c['town']) . ' · applied ' . h(from_utc($c['submitted_at'])->format('j M Y')) . '</span>'
+                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . '</p>'
+                . '<p>' . (!empty($c['safeguarding_confirmed_at']) ? '&#10003; Policy confirmed by ' . h((string) $c['safeguarding_confirmed_by']) . ' on ' . h(from_utc($c['safeguarding_confirmed_at'])->format('j M Y')) : 'Safeguarding policy: <strong>not yet confirmed</strong>') . '</p><ul>';
+            foreach ($co as $x) {
+                $b .= '<li>' . h($x['name']) . ': ' . ($x['dbs_checked'] ? '&#10003; ' . h(method_label($x['dbs_method'])) . ' on ' . h(date('j M Y', strtotime((string) $x['dbs_checked_on']))) . ' (confirmed by ' . h((string) $x['dbs_confirmed_by']) . ')' : '<strong>not yet confirmed</strong>') . '</li>';
+            }
+            $b .= '</ul><form method="post" action="/admin/applications/approve" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
+                . '<label class="check"><input type="checkbox" name="allow_unconfirmed" value="1"> Approve even if some coaches are unconfirmed</label><button type="submit">Approve and publish</button></form>'
+                . '<form method="post" action="/admin/applications/resend" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><button type="submit">Send the officer a new link</button></form>'
+                . '<form method="post" action="/admin/applications/confirm" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><label>Confirmed by hand, note<input name="note" maxlength="120" placeholder="who, how, when"></label><button type="submit">Record</button></form></div>';
+        }
+        $b .= '<h2>All clubs</h2>';
+    }
     foreach (q('SELECT id, slug, name, status, commission_pct, commission_free_until, stripe_account_id, stripe_charges_enabled FROM clubs ORDER BY name')->fetchAll() as $c) {
         $b .= '<form method="post" action="/admin/commission" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
             . '<strong>' . h($c['name']) . '</strong> <span class="muted">(' . h($c['status']) . ')</span>'
@@ -313,9 +368,70 @@ if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})(/cancel)?$#', $path, $bm)) {
     page('Your booking', $body);
 }
 
+if ($path === '/enrol') {
+    if ($method === 'POST') {
+        csrf_check();
+        $in = $_POST;
+        foreach (($in['g_num'] ?? []) as $i => $x) { $in['g_num_' . $i] = $x; $in['g_type_' . $i] = $in['g_type'][$i] ?? ''; $in['g_member_' . $i] = $in['g_member'][$i] ?? ''; $in['g_non_' . $i] = $in['g_non'][$i] ?? ''; }
+        foreach (($in['c_name'] ?? []) as $i => $x) { $in['c_name_' . $i] = $x; $in['c_price_' . $i] = $in['c_price'][$i] ?? ''; $in['c_qual_' . $i] = $in['c_qual'][$i] ?? ''; $in['c_other_' . $i] = $in['c_other'][$i] ?? ''; }
+        [$ok, $msg] = enrol_create($_POST);
+        if ($ok) { page('Application received', '<h1>Thank you</h1><p class="lead">We have emailed your safeguarding officer a private link to confirm the club\'s safeguarding details. When that is done we will review the application and let you know.</p><p><a href="/">Back to the home page</a></p>'); }
+        flash($msg, true);
+        page('Enrol your club', enrol_form_html($in));
+    }
+    page('Enrol your club', enrol_form_html());
+}
+
+if (preg_match('#^/verify/([0-9a-f]{48})$#', $path, $m)) {
+    [$tok, $state] = token_lookup($m[1]);
+    if ($state === 'invalid') { http_response_code(404); page('Link not found', '<h1>Link not found</h1><p>This link is not valid. Please use the link in the email, or ask hello@playmorecricket.com for a new one.</p>'); }
+    if ($state === 'expired') { http_response_code(410); page('Link expired', '<h1>This link has expired</h1><p>Links work for ' . TOKEN_DAYS . ' days. Please email hello@playmorecricket.com and we will send a new one.</p>'); }
+    $club = q('SELECT * FROM clubs WHERE id = ?', [$tok['club_id']])->fetch();
+    if ($tok['role'] === 'second') { $ids = array_map('intval', explode(',', (string) $tok['coach_ids'])); $list = $ids ? q('SELECT * FROM coaches WHERE club_id = ? AND id IN (' . implode(',', $ids) . ') ORDER BY id', [$club['id']])->fetchAll() : []; }
+    else { $list = q('SELECT * FROM coaches WHERE club_id = ? AND NOT is_safeguarding_officer AND active ORDER BY id', [$club['id']])->fetchAll(); }
+    if ($method === 'POST') {
+        csrf_check();
+        $by = $tok['person_name']; $done = 0; $today = new DateTimeImmutable('today', london()); $errs = [];
+        if ($tok['role'] === 'officer' && !empty($_POST['policy_ok']) && empty($club['safeguarding_confirmed_at'])) {
+            q('UPDATE clubs SET safeguarding_confirmed_at = ?, safeguarding_confirmed_by = ? WHERE id = ?', [now_utc(), $by, $club['id']]);
+            audit(null, 'safeguarding_policy_confirmed', $club['slug'] . ' by ' . $by); $done++;
+        }
+        foreach ($list as $co) {
+            $cid = (int) $co['id']; $method_ = (string) ($_POST['m'][$cid] ?? ''); $date = (string) ($_POST['d'][$cid] ?? '');
+            if ($method_ === '' || (int) $co['dbs_checked'] === 1) { continue; }
+            $dt = DateTimeImmutable::createFromFormat('!Y-m-d', $date, london());
+            if (!in_array($method_, ['certificate', 'update_service'], true) || !$dt || $dt > $today) { $errs[] = $co['name'] . ': choose how it was checked and a date that is not in the future.'; continue; }
+            record_dbs_confirmation($cid, (int) $tok['id'], $by, (string) $tok['sent_to'], $method_, $dt->format('Y-m-d'));
+            audit(null, 'dbs_confirmed', $co['name'] . ' (' . $club['slug'] . ') by ' . $by . ' ' . $method_); $done++;
+        }
+        q('UPDATE verification_tokens SET last_used_at = ? WHERE id = ?', [now_utc(), $tok['id']]);
+        if ($done) { send_email(ADMIN_NOTICE_EMAIL, 'Safeguarding confirmation received: ' . $club['name'], $by . ' has confirmed details for ' . $club['name'] . ". Review in /admin.\n"); }
+        flash($errs ? implode(' ', $errs) : ($done ? 'Thank you. Your confirmation has been recorded.' : 'Nothing was ticked, so nothing was recorded.'), (bool) $errs || !$done);
+        redirect('/verify/' . $m[1]);
+    }
+    $club = q('SELECT * FROM clubs WHERE id = ?', [$tok['club_id']])->fetch();
+    $b = '<h1>Safeguarding confirmation</h1><p class="lead">' . h($club['name']) . ' · for ' . h($tok['person_name']) . '</p>'
+       . '<p class="muted">We never ask for or keep DBS certificate numbers. We record your name, the date and how you checked. The tick on the club\'s page means the club confirmed the check; PlayMoreCricket does not verify it independently.</p>'
+       . '<form method="post">' . csrf_field();
+    if ($tok['role'] === 'officer') {
+        $b .= '<div class="card"><h2>Written safeguarding policy</h2>' . (!empty($club['safeguarding_confirmed_at']) ? '<p>&#10003; Confirmed on ' . h(from_utc($club['safeguarding_confirmed_at'])->format('j F Y')) . '.</p>'
+            : '<label class="check"><input type="checkbox" name="policy_ok" value="1"> I confirm that ' . h($club['name']) . ' has a written safeguarding policy in place, and that I am its safeguarding officer.</label>') . '</div>';
+    }
+    $b .= '<div class="card"><h2>Coaches</h2>';
+    if (!$list) { $b .= '<p>No coaches need confirming.</p>'; }
+    foreach ($list as $co) {
+        $cid = (int) $co['id'];
+        if ((int) $co['dbs_checked'] === 1) { $b .= '<p>&#10003; ' . h($co['name']) . ': ' . h(method_label($co['dbs_method'])) . ' on ' . h(date('j F Y', strtotime((string) $co['dbs_checked_on']))) . ' (' . h((string) $co['dbs_confirmed_by']) . ')</p>'; continue; }
+        $b .= '<fieldset><legend>' . h($co['name']) . '</legend><label>How did you check?<select name="m[' . $cid . ']"><option value="">Not checked yet</option>'
+            . '<option value="certificate">I have seen their DBS certificate</option><option value="update_service">I checked the DBS Update Service</option></select></label>'
+            . '<label>Date checked<input type="date" name="d[' . $cid . ']" max="' . (new DateTimeImmutable('today', london()))->format('Y-m-d') . '"></label></fieldset>';
+    }
+    page('Safeguarding confirmation', $b . '</div><button type="submit">Save confirmation</button></form>');
+}
+
 if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     $club = club_by_slug($m[1]);
-    if (!$club) { http_response_code(404); page('Not found', '<p>We could not find that club.</p>'); }
+    if (!$club || ($club['status'] !== 'active' && !$club['sponsored_partner'] && !($user && ($user['role'] === 'admin' || can_staff($user, $club))))) { http_response_code(404); page('Not found', '<p>We could not find that club.</p>'); }
     $sub = $m[2] ?? '';
     $nets = club_nets((int) $club['id']);
     $netId = (int) ($_REQUEST['net'] ?? ($nets[0]['id'] ?? 0));
@@ -428,7 +544,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         foreach ($coaches as $c) {
             $yr = ($c['dbs_checked'] && $c['dbs_checked_on']) ? date('Y', strtotime((string) $c['dbs_checked_on'])) : '';
             $b .= '<li><div class="coach-main"><strong>' . h($c['name']) . '</strong>'
-                . ($yr !== '' ? '<span class="dbs-right"><span class="tick" aria-hidden="true">✓</span> DBS checked ' . h($yr) . '</span>' : '') . '</div>'
+                . ($yr !== '' ? '<span class="dbs-right"><span class="tick" aria-hidden="true">✓</span> DBS checked ' . h($yr) . (!empty($c['dbs_confirmed_by']) ? ', confirmed by ' . h(preg_replace('/^Administrator: .*/', 'the club', (string) $c['dbs_confirmed_by'])) : '') . '</span>' : '') . '</div>'
                 . '<div class="muted">' . h($c['qualification']) . ' · ' . money((int) $c['hourly_price_pence']) . '/hr</div></li>';
         }
         $b .= '</ul>';

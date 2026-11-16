@@ -1,0 +1,277 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * Club applications and safeguarding verification (decided 16 Nov 2026).
+ * 1. A club applies on /enrol. It is saved as 'pending' and is not visible to the public.
+ * 2. The club's safeguarding officer gets a private link (/verify/<token>), valid 14 days.
+ *    They confirm the written safeguarding policy and, for each coach, that they saw the DBS certificate
+ *    or checked the DBS Update Service, with the date. No certificate numbers are collected or stored.
+ * 3. If the officer is also a coach, the key contact gets a second link for that coach only.
+ * 4. An administrator reviews the application in /admin and presses "Approve and publish".
+ */
+
+const TOKEN_DAYS = 14;
+const REMINDER_AFTER_DAYS = 3;
+const ADMIN_NOTICE_EMAIL = 'hello@playmorecricket.com';
+
+const QUALIFICATIONS = ['', 'ECB Support Coach (Level 1)', 'ECB Foundation Coach (Level 2)', 'ECB Core Coach (Level 3)', 'ECB Advanced Coach (Level 4)', 'ECB Specialist Coach (Level 5)', 'Other'];
+
+function slugify(string $name): string
+{
+    $s = strtolower(trim((string) preg_replace('/[^a-z0-9]+/i', '-', iconv('UTF-8', 'ASCII//TRANSLIT', $name) ?: $name), '-'));
+    return $s !== '' ? mb_substr($s, 0, 70) : 'club';
+}
+
+function unique_slug(string $name): string
+{
+    $base = slugify($name); $slug = $base; $i = 2;
+    while (q('SELECT 1 FROM clubs WHERE slug = ?', [$slug])->fetch()) { $slug = $base . '-' . $i++; }
+    return $slug;
+}
+
+function pence_from(string $pounds): ?int
+{
+    if ($pounds === '' || !is_numeric($pounds) || (float) $pounds < 0 || (float) $pounds > 1000) { return null; }
+    return (int) round((float) $pounds * 100);
+}
+
+/** Make a private link. Only its hash is stored. Returns the raw token to put in an email. */
+function make_token(int $clubId, string $role, string $name, string $email, array $coachIds = []): string
+{
+    $raw = bin2hex(random_bytes(24));
+    $expires = utc_string((new DateTimeImmutable('now', london()))->modify('+' . TOKEN_DAYS . ' days'));
+    q('INSERT INTO verification_tokens (club_id, token_hash, role, person_name, sent_to, coach_ids, expires_at) VALUES (?,?,?,?,?,?,?)',
+      [$clubId, hash('sha256', $raw), $role, $name, $email, $coachIds ? implode(',', $coachIds) : null, $expires]);
+    return $raw;
+}
+
+function verify_link(string $raw): string { return $GLOBALS['cfg']['app_url'] . '/verify/' . $raw; }
+
+/** Look up a link. Returns [row|null, 'ok'|'invalid'|'expired']. */
+function token_lookup(string $raw): array
+{
+    if (!preg_match('/^[0-9a-f]{48}$/', $raw)) { return [null, 'invalid']; }
+    $row = q('SELECT * FROM verification_tokens WHERE token_hash = ?', [hash('sha256', $raw)])->fetch();
+    if (!$row) { return [null, 'invalid']; }
+    if ($row['expires_at'] < now_utc()) { return [$row, 'expired']; }
+    return [$row, 'ok'];
+}
+
+function email_officer_link(array $club, string $role, string $name, string $email, string $raw, array $coachNames): void
+{
+    $link = verify_link($raw);
+    $list = $coachNames ? "\nCoaches to confirm:\n- " . implode("\n- ", $coachNames) . "\n" : '';
+    if ($role === 'officer') {
+        $body = "Hello $name,\n\n{$club['name']} has applied to be listed on PlayMoreCricket, and you are named as the club's safeguarding officer.\n\n"
+              . "Before the club goes live we need you to confirm two things:\n"
+              . "1. The club has a written safeguarding policy in place.\n"
+              . "2. For each coach, that you have seen their DBS certificate, or checked their status on the DBS Update Service, and the date.\n$list\n"
+              . "Please use this private link (it works for " . TOKEN_DAYS . " days):\n$link\n\n"
+              . "We never ask for or keep DBS certificate numbers. We keep only your name, the date, and how the check was done.\n"
+              . "If you are not the club's safeguarding officer, please reply to hello@playmorecricket.com and do not use the link.\n\nPlayMoreCricket";
+        $subject = 'Please confirm ' . $club['name'] . "'s safeguarding details";
+    } else {
+        $body = "Hello $name,\n\n{$club['name']} has applied to be listed on PlayMoreCricket. The club's safeguarding officer is also a coach, so they cannot confirm their own DBS check. We are asking you to confirm it instead.\n$list\n"
+              . "Please use this private link (it works for " . TOKEN_DAYS . " days):\n$link\n\n"
+              . "You will be asked whether you have seen their DBS certificate, or checked their status on the DBS Update Service, and the date. We never ask for or keep certificate numbers.\n"
+              . "If this is not right, please reply to hello@playmorecricket.com and do not use the link.\n\nPlayMoreCricket";
+        $subject = 'Please confirm a coach\'s DBS check for ' . $club['name'];
+    }
+    send_email($email, $subject, $body);
+}
+
+/** Validate an application and save it. Returns [ok, message, clubId|null]. */
+function enrol_create(array $in): array
+{
+    $err = [];
+    if (trim((string) ($in['website'] ?? '')) !== '') { return [false, 'Something went wrong. Please try again.', null]; }   // honeypot
+    $club = trim((string) ($in['club'] ?? '')); $town = trim((string) ($in['town'] ?? '')); $county = trim((string) ($in['county'] ?? 'Kent')) ?: 'Kent';
+    $postcode = strtoupper(trim((string) ($in['postcode'] ?? '')));
+    $cname = trim((string) ($in['cname'] ?? '')); $cdetail = trim((string) ($in['cdetail'] ?? ''));
+    $sname = trim((string) ($in['sname'] ?? '')); $semail = trim((string) ($in['semail'] ?? ''));
+    $policy = (string) ($in['policy'] ?? ''); $plink = trim((string) ($in['plink'] ?? ''));
+    if ($club === '' || mb_strlen($club) > 160) { $err[] = 'Add your club name.'; }
+    if ($town === '') { $err[] = 'Add your town or village.'; }
+    if ($cname === '') { $err[] = "Add the key contact's name."; }
+    if ($cdetail === '') { $err[] = "Add the key contact's email or phone number."; }
+    if ($sname === '') { $err[] = "Add the safeguarding officer's name."; }
+    if (!filter_var($semail, FILTER_VALIDATE_EMAIL)) { $err[] = "Add the safeguarding officer's email address. We send their confirmation link there."; }
+    if ($policy === 'link' && !preg_match('#^https?://\S+$#i', $plink)) { $err[] = 'Add the web link to the safeguarding policy, starting with https://'; }
+    elseif ($policy === 'no' || !in_array($policy, ['attached', 'link'], true)) { $err[] = 'We need a written safeguarding policy before we can list a club.'; }
+    foreach (['cf1', 'cf2', 'cf3', 'cf4'] as $c) { if (empty($in[$c])) { $err[] = 'Please tick all the confirmations at the bottom.'; break; } }
+
+    // Nets: up to 4 lines (number, type, member price, non-member price). Blank lines are ignored.
+    $groups = [];
+    foreach (($in['g_num'] ?? []) as $i => $num) {
+        $num = (int) $num; $type = (string) ($in['g_type'][$i] ?? 'outdoor'); $mem = trim((string) ($in['g_member'][$i] ?? '')); $non = trim((string) ($in['g_non'][$i] ?? ''));
+        if ($num === 0 && $non === '') { continue; }
+        $mp = pence_from($mem === '' ? '0' : $mem); $np = pence_from($non);
+        if ($num < 1 || $num > 20 || !in_array($type, ['outdoor', 'indoor'], true) || $mp === null || $np === null || $np <= 0) { $err[] = 'Check the nets on line ' . ($i + 1) . ': a number, a type, and prices (a non-member price is needed).'; continue; }
+        $groups[] = ['num' => $num, 'type' => $type, 'member' => $mp, 'non' => $np];
+    }
+    if (!$groups) { $err[] = 'Add at least one kind of net.'; }
+    $machine = !empty($in['machine']); $mprice = $machine ? pence_from(trim((string) ($in['mprice'] ?? ''))) : null;
+    if ($machine && ($mprice === null || $mprice <= 0)) { $err[] = 'Add the bowling machine price per hour.'; }
+    $mcoach = !empty($in['mcoach']);
+
+    $hours = [];
+    for ($d = 0; $d < 7; $d++) {
+        $closed = !empty($in['closed'][$d]); $o = (int) ($in['open'][$d] ?? 8); $c = (int) ($in['close'][$d] ?? 20);
+        if (!$closed && ($o < 0 || $o > 23 || $c < 1 || $c > 24 || $c <= $o)) { $err[] = 'Check the opening times on day ' . ($d + 1) . ': closing must be after opening.'; break; }
+        $hours[$d] = [$closed ? 1 : 0, $closed ? 8 : $o, $closed ? 20 : $c];
+    }
+
+    // Coaches: up to 6 lines. Blank lines are ignored.
+    $coaches = [];
+    $officerCoach = (int) ($in['officer_coach'] ?? 0);   // 1..6 = the safeguarding officer is that coach line
+    foreach (($in['c_name'] ?? []) as $i => $name) {
+        $name = trim((string) $name); $price = trim((string) ($in['c_price'][$i] ?? '')); $q = (string) ($in['c_qual'][$i] ?? '');
+        if ($name === '' && $price === '') { continue; }
+        $qual = $q === 'Other' ? trim((string) ($in['c_other'][$i] ?? '')) : $q;
+        $pp = pence_from($price);
+        if ($name === '' || $pp === null || $pp <= 0 || $qual === '' || !in_array($q, QUALIFICATIONS, true)) { $err[] = 'Check coach line ' . ($i + 1) . ': a name, an hourly price and a qualification.'; continue; }
+        $coaches[] = ['name' => $name, 'price' => $pp, 'qual' => mb_substr($qual, 0, 160), 'officer' => ($officerCoach === $i + 1)];
+    }
+    if ($err) { return [false, implode(' ', array_unique($err)), null]; }
+
+    $isEmail = filter_var($cdetail, FILTER_VALIDATE_EMAIL) !== false;
+    $slug = unique_slug($club);
+    q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at)
+       VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)",
+      [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $isEmail ? null : $cdetail, $isEmail ? $cdetail : null,
+       $cname, $cdetail, $sname, $semail, $policy === 'link' ? $plink : 'Written policy to be sent to hello@playmorecricket.com', now_utc()]);
+    $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
+
+    $outdoorExists = (bool) array_filter($groups, fn($g) => $g['type'] === 'outdoor');
+    foreach (['outdoor', 'indoor'] as $type) {
+        $n = 0;
+        foreach ($groups as $g) {
+            if ($g['type'] !== $type) { continue; }
+            for ($k = 0; $k < $g['num']; $k++) {
+                $n++;
+                $withMachine = $machine && ($type === 'outdoor' || !$outdoorExists);
+                q('INSERT INTO nets (club_id, name, kind, member_price_pence, nonmember_price_pence, machine_price_pence, machine_coach_only) VALUES (?,?,?,?,?,?,?)',
+                  [$clubId, ucfirst($type) . ' net ' . $n, $type, $g['member'], $g['non'], $withMachine ? $mprice : null, $mcoach ? 1 : 0]);
+                $netId = (int) q('SELECT MAX(id) AS i FROM nets WHERE club_id = ?', [$clubId])->fetch()['i'];
+                foreach ($hours as $d => $hh) { q('INSERT INTO opening_hours (net_id, weekday, is_closed, open_hour, close_hour) VALUES (?,?,?,?,?)', [$netId, $d, $hh[0], $hh[1], $hh[2]]); }
+            }
+        }
+    }
+    $coachIds = []; $officerCoachId = null;
+    foreach ($coaches as $c) {
+        q('INSERT INTO coaches (club_id, name, hourly_price_pence, qualification, dbs_checked, is_safeguarding_officer) VALUES (?,?,?,?,?,?)',
+          [$clubId, $c['name'], $c['price'], $c['qual'], 0, $c['officer'] ? 1 : 0]);
+        $id = (int) q('SELECT MAX(id) AS i FROM coaches WHERE club_id = ?', [$clubId])->fetch()['i'];
+        $coachIds[$id] = $c['name']; if ($c['officer']) { $officerCoachId = $id; }
+    }
+    audit(null, 'club_applied', $slug . ' (' . $club . ')');
+
+    $clubRow = ['name' => $club, 'slug' => $slug];
+    $others = array_values(array_diff_key($coachIds, $officerCoachId ? [$officerCoachId => 1] : []));
+    email_officer_link($clubRow, 'officer', $sname, $semail, make_token($clubId, 'officer', $sname, $semail), $others);
+    if ($officerCoachId && $isEmail && strcasecmp($cname, $coachIds[$officerCoachId]) !== 0) {
+        email_officer_link($clubRow, 'second', $cname, $cdetail, make_token($clubId, 'second', $cname, $cdetail, [$officerCoachId]), [$coachIds[$officerCoachId]]);
+    }
+    if ($isEmail) {
+        send_email($cdetail, 'We have received ' . $club . "'s application", "Hello $cname,\n\nThank you for applying to list $club on PlayMoreCricket.\n\n"
+            . "We have emailed $sname, your safeguarding officer, a private link to confirm the club's safeguarding policy and your coaches' DBS checks. "
+            . "Once that is done we will review your application and let you know when the club is live.\n\n"
+            . ($policy === 'attached' ? "Please also email your written safeguarding policy and your club crest to hello@playmorecricket.com.\n\n" : "Please also email your club crest to hello@playmorecricket.com.\n\n")
+            . 'PlayMoreCricket');
+    }
+    send_email(ADMIN_NOTICE_EMAIL, 'New club application: ' . $club, "$club ($town) has applied. Review it in /admin: " . $GLOBALS['cfg']['app_url'] . "/admin\n");
+    return [true, 'ok', $clubId];
+}
+
+/** Record that someone confirmed a coach's DBS check. Never takes or stores a certificate number. */
+function record_dbs_confirmation(int $coachId, ?int $tokenId, string $by, ?string $byEmail, string $method, string $checkedOn): void
+{
+    q('UPDATE coaches SET dbs_checked = ?, dbs_checked_on = ?, dbs_method = ?, dbs_confirmed_by = ? WHERE id = ?', [1, $checkedOn, $method, $by, $coachId]);
+    q('INSERT INTO dbs_confirmations (coach_id, token_id, confirmed_by, confirmed_by_email, method, checked_on) VALUES (?,?,?,?,?,?)',
+      [$coachId, $tokenId, $by, $byEmail, $method, $checkedOn]);
+}
+
+function method_label(?string $m): string
+{
+    return match ($m) { 'certificate' => 'certificate seen', 'update_service' => 'DBS Update Service checked', 'by_hand' => 'confirmed by an administrator', default => '' };
+}
+
+/** Reminder emails for links nobody has used after a few days. Safe to call often. Returns how many were sent. */
+function send_due_reminders(): int
+{
+    $cut = utc_string((new DateTimeImmutable('now', london()))->modify('-' . REMINDER_AFTER_DAYS . ' days'));
+    $rows = q('SELECT t.*, c.name AS club_name FROM verification_tokens t JOIN clubs c ON c.id = t.club_id
+               WHERE t.last_used_at IS NULL AND t.reminded_at IS NULL AND t.created_at < ? AND t.expires_at > ? AND c.status = ?',
+              [$cut, now_utc(), 'pending'])->fetchAll();
+    foreach ($rows as $t) {
+        // The link itself cannot be rebuilt (only its hash is kept), so a reminder asks them to use the original email.
+        send_email($t['sent_to'], 'Reminder: please confirm ' . $t['club_name'] . "'s safeguarding details",
+            "Hello {$t['person_name']},\n\nThis is a reminder that {$t['club_name']} is waiting for you to confirm its safeguarding details on PlayMoreCricket. "
+            . "Your private link is in our earlier email (subject: \"Please confirm...\"). It works until " . from_utc($t['expires_at'])->format('j F Y') . ".\n"
+            . "If you cannot find it, reply to hello@playmorecricket.com and we will send a new one.\n\nPlayMoreCricket");
+        q('UPDATE verification_tokens SET reminded_at = ? WHERE id = ?', [now_utc(), $t['id']]);
+    }
+    return count($rows);
+}
+
+/** The application form (plain HTML, no scripts needed). $old = values to put back after an error. */
+function enrol_form_html(array $old = []): string
+{
+    $v = fn(string $k, $d = '') => h((string) ($old[$k] ?? $d));
+    $sel = fn(string $name, array $opts, string $cur) => '<select name="' . $name . '">' . implode('', array_map(fn($o) => '<option value="' . h($o) . '"' . ($o === $cur ? ' selected' : '') . '>' . h($o === '' ? 'Choose one' : ucfirst($o)) . '</option>', $opts)) . '</select>';
+    $b = '<h1>Enrol your club</h1><p class="lead">Tell us about your nets, opening times and coaches. We email your safeguarding officer a private link to confirm the club\'s policy and each coach\'s DBS check, then we review and list your club.</p>'
+       . '<form method="post" action="/enrol" class="enrol">' . csrf_field()
+       . '<div style="position:absolute;left:-9999px" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>';
+    $b .= '<fieldset class="card"><legend>Your club</legend>'
+       . '<label>Club name<input name="club" maxlength="160" value="' . $v('club') . '" required></label>'
+       . '<label>Town or village<input name="town" maxlength="120" value="' . $v('town') . '" required></label>'
+       . '<label>County<input name="county" maxlength="80" value="' . $v('county', 'Kent') . '"></label>'
+       . '<label>Postcode<input name="postcode" maxlength="12" value="' . $v('postcode') . '"></label>'
+       . '<label>Key contact name<input name="cname" maxlength="160" value="' . $v('cname') . '" required></label>'
+       . '<label>Key contact email (or phone)<input name="cdetail" maxlength="190" value="' . $v('cdetail') . '" required></label></fieldset>';
+    $b .= '<fieldset class="card"><legend>Net hire</legend><p class="muted">One line for each kind of net. For example 3 outdoor nets and 1 indoor net are two lines. Visitors choose indoor or outdoor and we give them a free net of that type. Leave unused lines empty.</p>';
+    for ($i = 0; $i < 4; $i++) {
+        $b .= '<div class="row"><label>How many<input name="g_num[]" type="number" min="0" max="20" size="3" value="' . $v('g_num_' . $i) . '"></label>'
+            . '<label>Type' . $sel('g_type[]', ['outdoor', 'indoor'], (string) ($old['g_type_' . $i] ?? 'outdoor')) . '</label>'
+            . '<label>Members, &pound; per hour<input name="g_member[]" inputmode="decimal" size="5" value="' . $v('g_member_' . $i) . '" placeholder="0 if free"></label>'
+            . '<label>Non-members, &pound; per hour<input name="g_non[]" inputmode="decimal" size="5" value="' . $v('g_non_' . $i) . '"></label></div>';
+    }
+    $b .= '<label class="check"><input type="checkbox" name="machine" value="1"' . (!empty($old['machine']) ? ' checked' : '') . '> We have a bowling machine</label>'
+        . '<div class="row"><label>Machine price, &pound; per hour<input name="mprice" inputmode="decimal" size="5" value="' . $v('mprice') . '"></label>'
+        . '<label class="check"><input type="checkbox" name="mcoach" value="1" checked> Coaches only</label></div></fieldset>';
+    $b .= '<fieldset class="card"><legend>Opening times</legend><p class="muted">These repeat every week and apply to all nets.</p>';
+    foreach (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as $d => $name) {
+        $b .= '<div class="row"><strong>' . $name . '</strong><label class="check"><input type="checkbox" name="closed[' . $d . ']" value="1"> Closed</label>'
+            . '<select name="open[' . $d . ']" aria-label="' . $name . ' opens">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 8 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(5, 22))) . '</select>'
+            . '<select name="close[' . $d . ']" aria-label="' . $name . ' closes">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 20 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(6, 24))) . '</select></div>';
+    }
+    $b .= '</fieldset>';
+    $b .= '<fieldset class="card"><legend>Coaches</legend><p class="muted">Leave unused lines empty. Do not send DBS certificate numbers: your safeguarding officer confirms each check on a private page.</p>';
+    for ($i = 0; $i < 6; $i++) {
+        $b .= '<div class="row"><label>Coach name<input name="c_name[]" maxlength="160" value="' . $v('c_name_' . $i) . '"></label>'
+            . '<label>&pound; per hour<input name="c_price[]" inputmode="decimal" size="5" value="' . $v('c_price_' . $i) . '"></label>'
+            . '<label>Qualification' . $sel('c_qual[]', QUALIFICATIONS, (string) ($old['c_qual_' . $i] ?? '')) . '</label>'
+            . '<label>If other, which<input name="c_other[]" maxlength="100" value="' . $v('c_other_' . $i) . '"></label></div>';
+    }
+    $b .= '</fieldset>';
+    $b .= '<fieldset class="card"><legend>Safeguarding</legend><p class="muted">Every club must give us its safeguarding officer and written policy before it is listed, because juniors may be booked.</p>'
+        . '<label>Safeguarding officer\'s name<input name="sname" maxlength="160" value="' . $v('sname') . '" required></label>'
+        . '<label>Their email address<input type="email" name="semail" maxlength="190" value="' . $v('semail') . '" required><span class="muted">We send their private confirmation link here.</span></label>'
+        . '<label>Is the safeguarding officer also one of the coaches above?<select name="officer_coach"><option value="0">No</option>'
+        . implode('', array_map(fn($i) => '<option value="' . $i . '"' . ((int) ($old['officer_coach'] ?? 0) === $i ? ' selected' : '') . '>Yes, coach line ' . $i . '</option>', range(1, 6))) . '</select>'
+        . '<span class="muted">They cannot confirm their own DBS check, so we will ask the key contact to.</span></label>'
+        . '<label>Does the club have a written safeguarding policy?<select name="policy"><option value="">Choose one</option>'
+        . '<option value="attached"' . (($old['policy'] ?? '') === 'attached' ? ' selected' : '') . '>Yes, I will email it to hello@playmorecricket.com</option>'
+        . '<option value="link"' . (($old['policy'] ?? '') === 'link' ? ' selected' : '') . '>Yes, it is online</option>'
+        . '<option value="no"' . (($old['policy'] ?? '') === 'no' ? ' selected' : '') . '>Not yet</option></select></label>'
+        . '<label>Link to the policy (if online)<input name="plink" maxlength="200" value="' . $v('plink') . '" placeholder="https://"></label>'
+        . '<p class="notice">We do not list a club until we have seen its safeguarding policy.</p></fieldset>';
+    $b .= '<fieldset class="card"><legend>Please confirm</legend>'
+        . '<label class="check"><input type="checkbox" name="cf1" value="1"> I am authorised to enrol this club.</label>'
+        . '<label class="check"><input type="checkbox" name="cf2" value="1"> The club agrees to its name, prices and opening times being shown publicly.</label>'
+        . '<label class="check"><input type="checkbox" name="cf3" value="1"> Each coach listed agrees to their name, price and DBS status being shown publicly.</label>'
+        . '<label class="check"><input type="checkbox" name="cf4" value="1"> I understand a DBS tick appears only after the club\'s safeguarding officer has confirmed the check.</label>'
+        . '<button type="submit">Send my application</button></fieldset></form>';
+    return $b;
+}

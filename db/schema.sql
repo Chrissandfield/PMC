@@ -27,6 +27,13 @@ CREATE TABLE clubs (
   commission_free_until  DATE,
   status                 VARCHAR(10)  NOT NULL DEFAULT 'pending',
   created_at             DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  key_contact_name       VARCHAR(160) NULL,
+  key_contact_detail     VARCHAR(190) NULL,
+  submitted_at           DATETIME NULL,
+  safeguarding_confirmed_at DATETIME NULL,
+  safeguarding_confirmed_by VARCHAR(160) NULL,
+  approved_at            DATETIME NULL,
+  approved_by_user_id    BIGINT UNSIGNED NULL,
   CONSTRAINT clubs_commission_ck CHECK (commission_pct BETWEEN 0 AND 100),
   CONSTRAINT clubs_status_ck CHECK (status IN ('pending','active','paused'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -61,6 +68,9 @@ CREATE TABLE coaches (
   commission_free_until  DATE,
   active                 TINYINT(1)   NOT NULL DEFAULT 1,
   created_at             DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  dbs_method             VARCHAR(20) NULL,
+  dbs_confirmed_by       VARCHAR(160) NULL,
+  is_safeguarding_officer TINYINT(1) NOT NULL DEFAULT 0,
   CONSTRAINT coaches_club_fk FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE,
   CONSTRAINT coaches_user_fk FOREIGN KEY (user_id) REFERENCES users(id),
   CONSTRAINT coaches_commission_ck CHECK (commission_pct BETWEEN 0 AND 100),
@@ -190,8 +200,37 @@ CREATE TABLE audit_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Database updates already included above. New migrations in db/migrations/ run from the admin page.
+CREATE TABLE verification_tokens (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  club_id     BIGINT UNSIGNED NOT NULL,
+  token_hash  CHAR(64) NOT NULL UNIQUE,
+  role        VARCHAR(10) NOT NULL,
+  person_name VARCHAR(160) NOT NULL,
+  sent_to     VARCHAR(190) NOT NULL,
+  coach_ids   VARCHAR(200) NULL,
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at  DATETIME NOT NULL,
+  reminded_at DATETIME NULL,
+  last_used_at DATETIME NULL,
+  CONSTRAINT vt_club_fk FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE,
+  CONSTRAINT vt_role_ck CHECK (role IN ('officer','second'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE dbs_confirmations (
+  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  coach_id           BIGINT UNSIGNED NOT NULL,
+  token_id           BIGINT UNSIGNED NULL,
+  confirmed_by       VARCHAR(160) NOT NULL,
+  confirmed_by_email VARCHAR(190) NULL,
+  method             VARCHAR(20) NOT NULL,
+  checked_on         DATE NOT NULL,
+  recorded_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT dc_coach_fk FOREIGN KEY (coach_id) REFERENCES coaches(id) ON DELETE CASCADE,
+  CONSTRAINT dc_method_ck CHECK (method IN ('certificate','update_service','by_hand'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE schema_migrations (
   name       VARCHAR(120) NOT NULL PRIMARY KEY,
   applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley');
+INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications');
