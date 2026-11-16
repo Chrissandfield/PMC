@@ -20,5 +20,5 @@ INSERT INTO opening_hours (net_id, weekday, is_closed, open_hour, close_hour) VA
 
 INSERT INTO coaches (club_id, name, hourly_price_pence, qualification, dbs_checked, dbs_checked_on) VALUES
   (@club, 'Jake Cheeseman', 3300, 'ECB Support Coach (Level 1)',    1, '2026-11-03'),
-  (@club, 'Trevor Bailey',  3300, 'ECB Foundation Coach (Level 2)',  1, '2026-11-03'),
+  (@club, 'Trevor Bayley',  3300, 'ECB Foundation Coach (Level 2)',  1, '2026-11-03'),
   (@club, 'Adam Ramson',    4400, 'Australian Level 1',              1, '2026-11-03');

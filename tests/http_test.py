@@ -64,7 +64,7 @@ s,loc=book(jake,slot(13),type='blocked'); ok('start=' not in (loc or ''),'manage
 tre,_,_=login('trevor@test.local')
 s,loc=book(tre,slot(14),type='nonmember',customer_name='X',customer_email='a@b.c',customer_phone='1'); ok('start=' in (loc or ''),'coach cannot make a non-member booking'); print('   ',flash_of(tre,loc))
 s,loc=book(tre,slot(14),type='coach',coach_id=3,customer_name='Pupil'); ok('start=' not in (loc or ''),'coach books a coaching session')
-ok(psql("select c.name from bookings b join coaches c on c.id=b.coach_id where customer_name='Pupil'")=='Trevor Bailey','coach_id forced to Trevor even when form asks for Adam')
+ok(psql("select c.name from bookings b join coaches c on c.id=b.coach_id where customer_name='Pupil'")=='Trevor Bayley','coach_id forced to Trevor even when form asks for Adam')
 bid=psql("select id from bookings where customer_name='Sam Smith'")
 _,h,_=req(tre,f'/club/penshurst-park?week={wk}')
 s,_,_=req(tre,'/club/penshurst-park/release',{'csrf':csrf(h),'booking_id':bid,'net':1,'week':wk}); print('   ',flash_of(tre))

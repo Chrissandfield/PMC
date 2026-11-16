@@ -60,7 +60,7 @@ ok('/reserve?net=1&amp;start='+start(10) in h or '/reserve?net=1&start='+start(1
 ok('class="daylist"' in h and 'daytabs' in h,'phone-friendly day list is on the page')
 s,h,_=req(visitor,f'/club/penshurst-park/reserve?net=1&start={start(10)}'); ok(s==200 and 'Continue to payment' in h and 'Net hire only' in h,'reserve page loads')
 ok('Coaching session' not in h,'...and offers no coaching when no coach is free at 10:00')
-s,h,_=req(visitor,f'/club/penshurst-park/reserve?net=1&start={start(16)}'); ok('Coaching session' in h and 'Trevor Bailey' in h and 'Adam Ramson' not in h,'at 16:00 only Trevor (the available coach) is offered')
+s,h,_=req(visitor,f'/club/penshurst-park/reserve?net=1&start={start(16)}'); ok('Coaching session' in h and 'Trevor Bayley' in h and 'Adam Ramson' not in h,'at 16:00 only Trevor (the available coach) is offered')
 
 # validation: nothing should be created
 bad=[('no terms',dict(accept_terms=None)),('bad email',dict(customer_email='nope')),('short phone',dict(customer_phone='12')),('no name',dict(customer_name='')),

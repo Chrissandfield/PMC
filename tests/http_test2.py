@@ -26,7 +26,7 @@ def book(c,net,hh,**f):
     _,h,_=req(c,f'/club/penshurst-park/book?net={net}&start={start}')
     data={'csrf':csrf(h),'net':net,'start':start}; data.update(f)
     s,_,hd=req(c,'/club/penshurst-park/book',data); return hd.get('Location') or ''
-def avail_count(): return psql("select count(*) from coach_availability a join coaches c on c.id=a.coach_id where c.name='Trevor Bailey'").stdout.strip()
+def avail_count(): return psql("select count(*) from coach_availability a join coaches c on c.id=a.coach_id where c.name='Trevor Bayley'").stdout.strip()
 
 anon=client(); s,_,hd=req(anon,'/coach/availability'); ok(s==303 and hd['Location']=='/login','availability page needs login')
 tre=login('trevor@test.local'); adam=login('adam@test.local'); jake=login('jake@test.local')
@@ -34,7 +34,7 @@ tre=login('trevor@test.local'); adam=login('adam@test.local'); jake=login('jake@
 _,h,_=req(tre,f'/coach/availability?week={d}')
 s,_,_=req(tre,'/coach/availability',{'csrf':csrf(h),'week':d,'slot[]':[f'{di}-15',f'{di}-16',f'{di}-17',f'{di}-22',f'{(di+1)%7}-3'],'repeat':'1'})
 ok(avail_count()=='6','Trevor ticks 3 hours + repeats next week = 6 rows (22:00 and 03:00 outside opening hours ignored)')
-ok(psql(f"select count(*) from coach_availability a join coaches c on c.id=a.coach_id where c.name='Trevor Bailey' and starts_at::date='{nextday}'").stdout.strip()=='3','repeat copied to the following week')
+ok(psql(f"select count(*) from coach_availability a join coaches c on c.id=a.coach_id where c.name='Trevor Bayley' and starts_at::date='{nextday}'").stdout.strip()=='3','repeat copied to the following week')
 _,h,_=req(tre,f'/coach/availability?week={d}'); ok(h.count('checked')>=3,'saved hours show ticked when reopened')
 
 # Adam may not edit Trevor's availability: the coach field is ignored for coach logins
