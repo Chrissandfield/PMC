@@ -61,7 +61,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -95,6 +95,17 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         if ($role === 'coach' && $coachId) { q('UPDATE coaches SET user_id = ? WHERE id = ? AND club_id = ? AND user_id IS NULL', [$newId, $coachId, $clubId]); }
         audit((int) $user['id'], 'user_created', $email . ' ' . $role);
         flash('Login created for ' . $name . '.'); redirect('/admin');
+    }
+    if ($path === '/admin/stripe/disconnect' && $method === 'POST') {
+        csrf_check();
+        $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+        if (!$club) { flash('That club does not exist.', true); redirect('/admin'); }
+        if (empty($_POST['confirm'])) { flash('Tick the box to confirm you want to disconnect payments.', true); redirect('/admin'); }
+        $open = (int) q("SELECT COUNT(*) AS n FROM bookings b JOIN nets n ON n.id = b.net_id WHERE n.club_id = ? AND b.stripe_checkout_session_id IS NOT NULL AND b.status IN ('pending_payment','confirmed') AND b.starts_at > ?", [$club['id'], utc_string(new DateTimeImmutable('now', london()))])->fetch()['n'];
+        if ($open > 0) { flash('Not disconnected: ' . $open . ' upcoming booking(s) were paid through this Stripe account. Cancel or refund them first.', true); redirect('/admin'); }
+        q('UPDATE clubs SET stripe_account_id = NULL, stripe_charges_enabled = ? WHERE id = ?', [0, $club['id']]);
+        audit((int) $user['id'], 'stripe_disconnected', $club['slug'] . ' was ' . (string) $club['stripe_account_id']);
+        flash('Payments disconnected for ' . $club['name'] . '. The club can now connect a new Stripe account.'); redirect('/admin');
     }
     if ($path === '/admin/users/update' && $method === 'POST') {
         csrf_check();
@@ -161,12 +172,18 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         . '<label>Coach record to link (coaches only)<select name="coach_id">' . $copts . '</select></label>'
         . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
         . '<button type="submit">Create login</button></form><h2>Clubs and commission</h2>';
-    foreach (q('SELECT id, name, status, commission_pct, commission_free_until FROM clubs ORDER BY name')->fetchAll() as $c) {
+    foreach (q('SELECT id, slug, name, status, commission_pct, commission_free_until, stripe_account_id, stripe_charges_enabled FROM clubs ORDER BY name')->fetchAll() as $c) {
         $b .= '<form method="post" action="/admin/commission" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
             . '<strong>' . h($c['name']) . '</strong> <span class="muted">(' . h($c['status']) . ')</span>'
             . '<label>Commission %<input name="commission_pct" value="' . h((string) $c['commission_pct']) . '" inputmode="decimal" size="5"></label>'
             . '<label>No commission until<input type="date" name="commission_free_until" value="' . h((string) $c['commission_free_until']) . '"></label>'
             . '<button type="submit">Save</button></form>';
+        if (!empty($c['stripe_account_id'])) {
+            $b .= '<form method="post" action="/admin/stripe/disconnect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
+                . '<span class="muted">Stripe account ' . h((string) $c['stripe_account_id']) . ((int) $c['stripe_charges_enabled'] === 1 ? ' (payments on)' : ' (sign-up not finished)') . '</span>'
+                . '<label><input type="checkbox" name="confirm" value="1"> Disconnect (use before switching from sandbox to live)</label>'
+                . '<button type="submit">Disconnect payments</button></form>';
+        }
     }
     page('Admin', $b);
 }
