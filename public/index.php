@@ -268,7 +268,7 @@ if ($path === '/stripe/connect' && $method === 'POST') {
         }
         $GLOBALS['fake_club_slug'] = $club['slug'];
         $url = stripe_account_link($club['stripe_account_id'], $GLOBALS['cfg']['app_url'] . '/stripe/return?club=' . $club['slug'], $GLOBALS['cfg']['app_url'] . '/stripe/return?club=' . $club['slug'] . '&refresh=1');
-    } catch (Throwable $e) { error_log('PMC connect failed: ' . $e->getMessage()); flash('Could not reach Stripe. Please try again.', true); redirect('/club/' . $club['slug']); }
+    } catch (Throwable $e) { error_log('PMC connect failed: ' . $e->getMessage()); flash('Could not reach Stripe. Please try again.' . ($u['role'] === 'admin' ? ' (Detail for administrators: ' . $e->getMessage() . ')' : ''), true); redirect('/club/' . $club['slug']); }
     audit((int) $u['id'], 'stripe_connect_started', $club['slug']);
     header('Location: ' . $url, true, 303); exit;
 }
