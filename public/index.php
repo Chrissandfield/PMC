@@ -61,7 +61,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -96,6 +96,31 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         audit((int) $user['id'], 'user_created', $email . ' ' . $role);
         flash('Login created for ' . $name . '.'); redirect('/admin');
     }
+    if ($path === '/admin/users/update' && $method === 'POST') {
+        csrf_check();
+        $id = (int) ($_POST['id'] ?? 0); $email = trim((string) ($_POST['email'] ?? '')); $name = trim((string) ($_POST['name'] ?? '')); $pw = (string) ($_POST['password'] ?? '');
+        $target = q('SELECT * FROM users WHERE id = ?', [$id])->fetch();
+        if (!$target) { flash('That login does not exist.', true); redirect('/admin'); }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || $name === '' || ($pw !== '' && strlen($pw) < 10)) {
+            flash('Enter a name, a valid email, and either leave the password blank or use at least 10 characters.', true); redirect('/admin/users/edit?id=' . $id);
+        }
+        if (q('SELECT 1 FROM users WHERE email = ? AND id <> ?', [$email, $id])->fetch()) { flash('Another login already uses that email.', true); redirect('/admin/users/edit?id=' . $id); }
+        q('UPDATE users SET name = ?, email = ? WHERE id = ?', [$name, $email, $id]);
+        if ($pw !== '') { q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($pw, PASSWORD_DEFAULT), $id]); }
+        audit((int) $user['id'], 'user_updated', $target['email'] . ' -> ' . $email . ($pw !== '' ? ' (password reset)' : ''));
+        flash('Login updated for ' . $name . '.'); redirect('/admin');
+    }
+    if ($path === '/admin/users/edit') {
+        $id = (int) ($_GET['id'] ?? 0);
+        $target = q('SELECT id, name, email, role FROM users WHERE id = ?', [$id])->fetch();
+        if (!$target) { flash('That login does not exist.', true); redirect('/admin'); }
+        page('Edit login', '<h1>Edit login</h1><p class="muted">Role: ' . h($target['role']) . '. To change a role or club, ask Claude.</p>'
+            . '<form method="post" action="/admin/users/update" class="card narrow">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $target['id'] . '">'
+            . '<label>Name<input name="name" value="' . h($target['name']) . '" required></label>'
+            . '<label>Email<input type="email" name="email" value="' . h($target['email']) . '" required autocomplete="off"></label>'
+            . '<label>New password (leave blank to keep the current one)<input type="password" name="password" minlength="10" autocomplete="new-password"></label>'
+            . '<button type="submit">Save</button> <a href="/admin">Cancel</a></form>');
+    }
     $pending = pending_migrations();
     $b = '<h1>Admin</h1><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()
        . '<span>' . ($pending ? '<strong>' . count($pending) . ' update(s) waiting:</strong> ' . h(implode(', ', array_keys($pending))) : 'The database is up to date.') . '</span>'
@@ -105,8 +130,8 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
     $opts = ''; foreach ($clubsAll as $c) { $opts .= '<option value="' . (int) $c['id'] . '">' . h($c['name']) . '</option>'; }
     $copts = '<option value="0">(none)</option>'; foreach ($coachesFree as $c) { $copts .= '<option value="' . (int) $c['id'] . '">' . h($c['name']) . '</option>'; }
     $b .= '<h2>Logins</h2><ul class="plain">';
-    foreach (q('SELECT u.name, u.email, u.role, c.name AS club FROM users u LEFT JOIN clubs c ON c.id = u.club_id ORDER BY u.role, u.name')->fetchAll() as $u2) {
-        $b .= '<li><strong>' . h($u2['name']) . '</strong> · ' . h($u2['email']) . ' · ' . h($u2['role']) . ($u2['club'] ? ' · ' . h($u2['club']) : '') . '</li>';
+    foreach (q('SELECT u.id, u.name, u.email, u.role, c.name AS club FROM users u LEFT JOIN clubs c ON c.id = u.club_id ORDER BY u.role, u.name')->fetchAll() as $u2) {
+        $b .= '<li><strong>' . h($u2['name']) . '</strong> · ' . h($u2['email']) . ' · ' . h($u2['role']) . ($u2['club'] ? ' · ' . h($u2['club']) : '') . ' · <a href="/admin/users/edit?id=' . (int) $u2['id'] . '">Edit</a></li>';
     }
     $b .= '</ul><form method="post" action="/admin/users" class="card narrow"><strong>Add a login</strong>' . csrf_field()
         . '<label>Name<input name="name" required></label><label>Email<input type="email" name="email" required autocomplete="off"></label>'
