@@ -61,7 +61,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/confirm'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/confirm', '/admin/coach/dbs'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -142,6 +142,24 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         }
         audit((int) $user['id'], 'safeguarding_confirmed_by_hand', $club['slug'] . ': ' . $note);
         flash('Recorded as confirmed by hand.'); redirect('/admin');
+    }
+    if ($path === '/admin/coach/dbs' && $method === 'POST') {
+        csrf_check();
+        $co = q('SELECT c.*, cl.slug AS club_slug FROM coaches c JOIN clubs cl ON cl.id = c.club_id WHERE c.id = ?', [(int) ($_POST['coach_id'] ?? 0)])->fetch();
+        if (!$co) { flash('That coach does not exist.', true); redirect('/admin'); }
+        if (($_POST['action'] ?? '') === 'clear') {
+            q('UPDATE coaches SET dbs_checked = ?, dbs_checked_on = NULL, dbs_method = NULL, dbs_confirmed_by = NULL WHERE id = ?', [0, $co['id']]);
+            audit((int) $user['id'], 'dbs_cleared', $co['name'] . ' (' . $co['club_slug'] . ')');
+            flash('The DBS tick was removed for ' . $co['name'] . '.'); redirect('/admin');
+        }
+        $note = trim((string) ($_POST['note'] ?? '')); $method_ = (string) ($_POST['method'] ?? '');
+        $dt = DateTimeImmutable::createFromFormat('!Y-m-d', (string) ($_POST['checked_on'] ?? ''), london());
+        if ($note === '' || !in_array($method_, ['certificate', 'update_service', 'by_hand'], true) || !$dt || $dt > new DateTimeImmutable('today', london())) {
+            flash('Choose how it was checked, a date that is not in the future, and add a note saying who confirmed it.', true); redirect('/admin');
+        }
+        record_dbs_confirmation((int) $co['id'], null, mb_substr('Administrator: ' . $note, 0, 160), null, $method_, $dt->format('Y-m-d'));
+        audit((int) $user['id'], 'dbs_set_by_hand', $co['name'] . ' (' . $co['club_slug'] . '): ' . $note);
+        flash('DBS check recorded for ' . $co['name'] . '.'); redirect('/admin');
     }
     if ($path === '/admin/users/update' && $method === 'POST') {
         csrf_check();
@@ -241,6 +259,16 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
                 . '<button type="submit">' . ($has ? 'Continue Stripe sign-up' : 'Set up payments') . '</button></form>';
         }
         $b .= '</div>';
+        $b .= '<details class="card"><summary>Coaches and DBS checks</summary>';
+        foreach (q('SELECT id, name, dbs_checked, dbs_checked_on, dbs_method, dbs_confirmed_by FROM coaches WHERE club_id = ? ORDER BY name', [$c['id']])->fetchAll() as $x) {
+            $b .= '<div class="row"><strong>' . h($x['name']) . '</strong> <span class="muted">' . ($x['dbs_checked'] ? '&#10003; ' . h(method_label($x['dbs_method'])) . ' on ' . h(date('j M Y', strtotime((string) $x['dbs_checked_on']))) . ', ' . h((string) $x['dbs_confirmed_by']) : 'no confirmed check') . '</span>'
+                . '<form method="post" action="/admin/coach/dbs" class="row">' . csrf_field() . '<input type="hidden" name="coach_id" value="' . (int) $x['id'] . '">'
+                . '<select name="method"><option value="certificate">Certificate seen</option><option value="update_service">Update Service checked</option><option value="by_hand">Other (say in note)</option></select>'
+                . '<input type="date" name="checked_on" max="' . (new DateTimeImmutable('today', london()))->format('Y-m-d') . '" aria-label="Date checked">'
+                . '<input name="note" maxlength="120" placeholder="who confirmed, how" aria-label="Note"><button type="submit" name="action" value="set">Record check</button>'
+                . ($x['dbs_checked'] ? '<button type="submit" name="action" value="clear">Remove tick</button>' : '') . '</form></div>';
+        }
+        $b .= '</details>';
         if ($has) {
             $b .= '<form method="post" action="/admin/stripe/disconnect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
                 . '<label><input type="checkbox" name="confirm" value="1"> Disconnect (use before switching from sandbox to live)</label>'
