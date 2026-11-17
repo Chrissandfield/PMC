@@ -127,6 +127,14 @@ function visitor_reserve(array $club, array $net, string $localStart, array $in)
     return [true, 'Reserved', (string) $s['url']];
 }
 
+/** The coach's login email for a booking, if the booking has a coach who has a login. */
+function coach_email(array $b): ?string
+{
+    if (empty($b['coach_id'])) { return null; }
+    $e = q('SELECT u.email FROM coaches c JOIN users u ON u.id = c.user_id WHERE c.id = ?', [$b['coach_id']])->fetch();
+    return $e ? (string) $e['email'] : null;
+}
+
 function queue_confirmation_emails(array $b): void
 {
     $link = booking_link($b['reference']);
@@ -138,6 +146,13 @@ function queue_confirmation_emails(array $b): void
     if (!empty($b['club_email'])) {
         send_email($b['club_email'], 'New booking: ' . $b['reference'],
             "A new paid booking.\n\n{$when}\nName: {$b['customer_name']}\nPhone: {$b['customer_phone']}\nEmail: {$b['customer_email']}\nPaid: {$paid}"
+            . ($b['is_junior'] ? "\nUNDER-18: {$b['child_first_name']}, aged {$b['child_age']}. A parent/guardian has confirmed they agree and will be present." : '')
+            . "\nReference: {$b['reference']}\n\nPlayMoreCricket", (int) $b['id']);
+    }
+    if (($ce = coach_email($b)) !== null && $ce !== ($b['club_email'] ?? null)) {
+        send_email($ce, 'You have been booked: ' . $b['reference'],
+            "Hello {$b['coach_name']},\n\nYou have a new paid coaching session.\n\n{$when}\nBooked by: {$b['customer_name']}"
+            . ($b['with_machine'] ? "\nBowling machine: yes" : '')
             . ($b['is_junior'] ? "\nUNDER-18: {$b['child_first_name']}, aged {$b['child_age']}. A parent/guardian has confirmed they agree and will be present." : '')
             . "\nReference: {$b['reference']}\n\nPlayMoreCricket", (int) $b['id']);
     }
@@ -216,6 +231,9 @@ function customer_cancel(array $b): array
         "Hello {$b['customer_name']},\n\nYour booking has been cancelled and refunded in full (" . money((int) $b['price_pence']) . "). Refunds usually take 5 to 10 working days to reach your card.\n\n" . describe_booking($b) . "\n\nPlayMoreCricket", (int) $b['id']);
     if (!empty($b['club_email'])) {
         send_email($b['club_email'], 'Booking cancelled: ' . $b['reference'], 'The customer cancelled and was refunded. ' . describe_booking($b) . "\n\nThe hour is free again.", (int) $b['id']);
+    }
+    if (($ce = coach_email($b)) !== null && $ce !== ($b['club_email'] ?? null)) {
+        send_email($ce, 'Session cancelled: ' . $b['reference'], 'This session was cancelled by the customer and refunded. ' . describe_booking($b) . "\n\nThe hour is free again.", (int) $b['id']);
     }
     return [true, 'Your booking has been cancelled and refunded in full.'];
 }
