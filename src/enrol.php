@@ -126,18 +126,18 @@ function enrol_create(array $in): array
     $postcode = strtoupper(trim((string) ($in['postcode'] ?? '')));
     $cname = trim((string) ($in['cname'] ?? '')); $cdetail = trim((string) ($in['cdetail'] ?? ''));
     $sname = trim((string) ($in['sname'] ?? '')); $semail = trim((string) ($in['semail'] ?? ''));
-    $policy = (string) ($in['policy'] ?? ''); $plink = trim((string) ($in['plink'] ?? ''));
+    $plink = trim((string) ($in['plink'] ?? ''));
     if ($club === '' || mb_strlen($club) > 160) { $err[] = 'Add your club name.'; }
     if ($town === '') { $err[] = 'Add your town or village.'; }
     if ($cname === '') { $err[] = "Add the key contact's name."; }
     if ($cdetail === '') { $err[] = "Add the key contact's email or phone number."; }
     if ($sname === '') { $err[] = "Add the safeguarding officer's name."; }
     if (!filter_var($semail, FILTER_VALIDATE_EMAIL)) { $err[] = "Add the safeguarding officer's email address. We send their confirmation link there."; }
-    if ($policy === 'link' && !preg_match('#^https?://\S+$#i', $plink)) { $err[] = 'Add the web link to the safeguarding policy, starting with https://'; }
-    elseif ($policy === 'no' || !in_array($policy, ['attached', 'link'], true)) { $err[] = 'We need a written safeguarding policy before we can list a club.'; }
+    // The club gives its written safeguarding policy as a file OR a web link (or both).
     [$docErr, $docMime, $docB64, $docName] = document_from_upload($_FILES['policy_file'] ?? null);
     if ($docErr) { $err[] = $docErr; }
-    elseif ($policy === 'attached' && $docB64 === null) { $err[] = 'Please attach the safeguarding policy file, or choose "Yes, it is online" and add the link.'; }
+    if ($plink !== '' && !preg_match('#^https?://\S+$#i', $plink)) { $err[] = 'The policy link must start with https://'; }
+    elseif ($docB64 === null && $plink === '' && !$docErr) { $err[] = 'We need the safeguarding policy before we can list a club: attach the file or give the web link.'; }
     foreach (['cf1', 'cf2', 'cf3', 'cf4'] as $c) { if (empty($in[$c])) { $err[] = 'Please tick all the confirmations at the bottom.'; break; } }
 
     // Nets: one row per net (type, member price, non-member price). Blank rows are ignored.
@@ -182,11 +182,11 @@ function enrol_create(array $in): array
     q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at)
        VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)",
       [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $isEmail ? null : $cdetail, $isEmail ? $cdetail : null,
-       $cname, $cdetail, $sname, $semail, $policy === 'link' ? $plink : 'Uploaded file: ' . ($docName ?? 'policy'), now_utc()]);
+       $cname, $cdetail, $sname, $semail, implode(' | ', array_filter([$docB64 !== null ? 'Uploaded file: ' . $docName : '', $plink])), now_utc()]);
     $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
 
     if ($crestB64 !== null) { q('INSERT INTO club_crests (club_id, mime, data_b64, permission_given_by) VALUES (?,?,?,?)', [$clubId, $crestMime, $crestB64, $cname]); }
-    if ($policy === 'attached' && $docB64 !== null) { q('INSERT INTO club_documents (club_id, kind, filename, mime, data_b64) VALUES (?,?,?,?,?)', [$clubId, 'safeguarding', $docName, $docMime, $docB64]); }
+    if ($docB64 !== null) { q('INSERT INTO club_documents (club_id, kind, filename, mime, data_b64) VALUES (?,?,?,?,?)', [$clubId, 'safeguarding', $docName, $docMime, $docB64]); }
     $outdoorExists = (bool) array_filter($groups, fn($g) => $g['type'] === 'outdoor');
     foreach (['outdoor', 'indoor'] as $type) {
         $n = 0;
@@ -308,12 +308,10 @@ function enrol_form_html(array $old = []): string
         . '<label>Is the safeguarding officer also one of the coaches above?<select name="officer_coach"><option value="0">No</option>'
         . implode('', array_map(fn($i) => '<option value="' . $i . '"' . ((int) ($old['officer_coach'] ?? 0) === $i ? ' selected' : '') . '>Yes, coach line ' . $i . '</option>', range(1, 6))) . '</select>'
         . '<span class="muted">They cannot confirm their own DBS check, so we will ask the key contact to.</span></label>'
-        . '<label>Does the club have a written safeguarding policy?<select name="policy"><option value="">Choose one</option>'
-        . '<option value="attached"' . (($old['policy'] ?? '') === 'attached' ? ' selected' : '') . '>Yes, I will attach the file below</option>'
-        . '<option value="link"' . (($old['policy'] ?? '') === 'link' ? ' selected' : '') . '>Yes, it is online</option>'
-        . '<option value="no"' . (($old['policy'] ?? '') === 'no' ? ' selected' : '') . '>Not yet</option></select></label>'
+        . '<p><strong>Written safeguarding policy</strong><br><span class="muted">Attach the file OR give a link to it online.</span></p>'
         . '<label>Attach the policy (PDF or Word, under 2 MB)<input type="file" name="policy_file" accept=".pdf,.doc,.docx,application/pdf"><span class="muted">Only you and PlayMoreCricket administrators can see this file.</span></label>'
-        . '<label>Link to the policy (if online)<input name="plink" maxlength="200" value="' . $v('plink') . '" placeholder="https://"></label>'
+        . '<p class="or">OR</p>'
+        . '<label>Link to the policy online<input name="plink" maxlength="200" value="' . $v('plink') . '" placeholder="https://"></label>'
         . '<p class="notice">We do not list a club until we have seen its safeguarding policy.</p></fieldset>';
     $b .= '<fieldset class="card"><legend>Please confirm</legend>'
         . '<label class="check"><input type="checkbox" name="cf1" value="1"> I am authorised to enrol this club.</label>'

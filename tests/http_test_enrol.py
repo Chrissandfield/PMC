@@ -15,12 +15,12 @@ def csrf(h): return re.search(r'name="csrf" value="([0-9a-f]+)"',h).group(1)
 v=client()
 s,h,_=req(v,'/enrol'); ok(s==200 and 'Enrol your club' in h,'form loads')
 form={'csrf':csrf(h),'club':'Test Vale CC','town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cdetail':'kay@test.local',
- 'sname':'Sam Safe','semail':'sam@test.local','policy':'link','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1',
+ 'sname':'Sam Safe','semail':'sam@test.local','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1',
  'g_type[]':['outdoor','outdoor','outdoor','indoor','outdoor','outdoor'],'g_member[]':['0','0','0','0','',''],'g_non[]':['10','10','10','15','',''],
  'c_name[]':['Sam Safe','Pat Coach','','','',''],'c_price[]':['30','25','','','',''],'c_qual[]':['ECB Core Coach (Level 3)','ECB Foundation Coach (Level 2)','','','',''],'c_other[]':['']*6}
 for d in range(7): form[f'open[{d}]']='9'; form[f'close[{d}]']='19'
-bad=dict(form); bad['policy']='no'
-s,h,_=req(v,'/enrol',bad); ok(s==200 and 'safeguarding policy before' in h,'no policy refused')
+bad=dict(form); bad['plink']=''
+s,h,_=req(v,'/enrol',bad); ok(s==200 and 'attach the file or give the web link' in h,'no policy refused')
 s,h,_=req(v,'/enrol',form); ok(s==200 and 'Thank you' in h,'application accepted: '+h[:0])
 ok(psql("select status from clubs where slug='test-vale-cc'")=='pending','club saved pending')
 ok(psql("select count(*) from nets n join clubs c on c.id=n.club_id where c.slug='test-vale-cc'")=='4','4 nets created')
