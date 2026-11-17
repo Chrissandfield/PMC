@@ -268,6 +268,8 @@ function save_availability(array $coach, DateTimeImmutable $monday, array $selec
             $wk = $monday->modify('+' . (7 * $w) . ' days');
             q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?',
               [$coach['id'], utc_string($wk->setTime(0, 0)), utc_string($wk->modify('+7 days')->setTime(0, 0))]);
+            q('DELETE FROM coach_pattern_weeks WHERE coach_id = ? AND week_start = ?', [$coach['id'], $wk->format('Y-m-d')]);
+            q('INSERT INTO coach_pattern_weeks (coach_id, week_start, source) VALUES (?,?,?)', [$coach['id'], $wk->format('Y-m-d'), 'manual']);
             foreach ($pattern as [$di, $h]) {
                 $day = $wk->modify("+$di days");
                 $slot = $day->setTime($h, 0);
@@ -280,4 +282,99 @@ function save_availability(array $coach, DateTimeImmutable $monday, array $selec
         }
         $pdo->commit();
     } catch (Throwable $e) { $pdo->rollBack(); throw $e; }
+}
+
+
+const PATTERN_WEEKS = 12;
+
+/** Is this hour inside any of the club's net opening hours on that day? */
+function club_open_at(array $nets, DateTimeImmutable $day, int $h): bool
+{
+    foreach ($nets as $n) { $hrs = hours_for((int) $n['id'], $day); if ($hrs && $h >= $hrs[0] && $h < $hrs[1]) { return true; } }
+    return false;
+}
+
+/** The coach's standing pattern as [[weekday 0-6, hour], ...]. */
+function coach_pattern(int $coachId): array
+{
+    return array_map(fn($r) => [(int) $r['weekday'], (int) $r['hour']], q('SELECT weekday, hour FROM coach_pattern WHERE coach_id = ? ORDER BY weekday, hour', [$coachId])->fetchAll());
+}
+
+/** Save a standing pattern. Weeks already filled from the old pattern are refilled; weeks the coach set by hand are left alone. */
+function save_pattern(array $coach, array $selected): void
+{
+    $slots = [];
+    foreach ($selected as $s) { if (is_string($s) && preg_match('/^([0-6])-(\d{1,2})$/', $s, $m) && (int) $m[2] < 24) { $slots[$m[1] . '-' . $m[2]] = [(int) $m[1], (int) $m[2]]; } }
+    $pdo = db(); $pdo->beginTransaction();
+    try {
+        q('DELETE FROM coach_pattern WHERE coach_id = ?', [$coach['id']]);
+        foreach ($slots as [$d, $h]) { q('INSERT INTO coach_pattern (coach_id, weekday, hour) VALUES (?,?,?)', [$coach['id'], $d, $h]); }
+        $today = new DateTimeImmutable('today', london());
+        $thisWeek = $today->modify('-' . ((int) $today->format('N') - 1) . ' days');
+        foreach (q('SELECT week_start FROM coach_pattern_weeks WHERE coach_id = ? AND source = ? AND week_start >= ?', [$coach['id'], 'pattern', $thisWeek->format('Y-m-d')])->fetchAll() as $r) {
+            $wk = new DateTimeImmutable((string) $r['week_start'], london());
+            q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?', [$coach['id'], utc_string(max($wk->setTime(0, 0), new DateTimeImmutable('now', london()))), utc_string($wk->modify('+7 days')->setTime(0, 0))]);
+            q('DELETE FROM coach_pattern_weeks WHERE coach_id = ? AND week_start = ?', [$coach['id'], $wk->format('Y-m-d')]);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) { $pdo->rollBack(); throw $e; }
+    apply_pattern($coach);
+}
+
+/** Fill the next PATTERN_WEEKS weeks from the coach's pattern, skipping weeks already settled. Safe to call often. */
+function apply_pattern(array $coach): int
+{
+    $pat = coach_pattern((int) $coach['id']);
+    if (!$pat) { return 0; }
+    $nets = club_nets((int) $coach['club_id']);
+    $now = new DateTimeImmutable('now', london());
+    $today = new DateTimeImmutable('today', london());
+    $thisWeek = $today->modify('-' . ((int) $today->format('N') - 1) . ' days');
+    $done = array_flip(array_map(fn($r) => substr((string) $r, 0, 10), q('SELECT week_start FROM coach_pattern_weeks WHERE coach_id = ? AND week_start >= ?', [$coach['id'], $thisWeek->format('Y-m-d')])->fetchAll(PDO::FETCH_COLUMN)));
+    $filled = 0;
+    for ($w = 0; $w < PATTERN_WEEKS; $w++) {
+        $wk = $thisWeek->modify('+' . (7 * $w) . ' days'); $key = $wk->format('Y-m-d');
+        if (isset($done[$key])) { continue; }
+        foreach ($pat as [$di, $h]) {
+            $day = $wk->modify("+$di days"); $slot = $day->setTime($h, 0);
+            if ($slot <= $now || !club_open_at($nets, $day, $h)) { continue; }
+            $exists = q('SELECT 1 FROM coach_availability WHERE coach_id = ? AND starts_at = ?', [$coach['id'], utc_string($slot)])->fetch();
+            if (!$exists) { q('INSERT INTO coach_availability (coach_id, starts_at) VALUES (?, ?)', [$coach['id'], utc_string($slot)]); $filled++; }
+        }
+        q('INSERT INTO coach_pattern_weeks (coach_id, week_start, source) VALUES (?,?,?)', [$coach['id'], $key, 'pattern']);
+    }
+    return $filled;
+}
+
+function apply_patterns_for_club(int $clubId): void
+{
+    foreach (q('SELECT c.* FROM coaches c WHERE c.club_id = ? AND c.active AND EXISTS (SELECT 1 FROM coach_pattern p WHERE p.coach_id = c.id)', [$clubId])->fetchAll() as $co) { apply_pattern($co); }
+}
+
+/** Put one week back to the coach's standing pattern (undo hand edits for that week). */
+function reset_week_to_pattern(array $coach, DateTimeImmutable $monday): void
+{
+    q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?', [$coach['id'], utc_string(max($monday->setTime(0, 0), new DateTimeImmutable('now', london()))), utc_string($monday->modify('+7 days')->setTime(0, 0))]);
+    q('DELETE FROM coach_pattern_weeks WHERE coach_id = ? AND week_start = ?', [$coach['id'], $monday->format('Y-m-d')]);
+    apply_pattern($coach);
+}
+
+/** Sunday reminder: coaches with a login and nothing set for next week. $force ignores the day-of-week check (tests). Returns the number sent. */
+function send_availability_reminders(bool $force = false): int
+{
+    $today = new DateTimeImmutable('today', london());
+    if (!$force && (int) $today->format('N') !== 7) { return 0; }
+    $next = $today->modify('+' . (8 - (int) $today->format('N')) . ' days');
+    $sent = 0;
+    foreach (q('SELECT c.*, u.email AS user_email, cl.name AS club_name FROM coaches c JOIN users u ON u.id = c.user_id JOIN clubs cl ON cl.id = c.club_id
+                WHERE c.active AND (cl.status = ? OR cl.sponsored_partner) AND (c.availability_reminded_on IS NULL OR c.availability_reminded_on < ?)', ['active', $today->format('Y-m-d')])->fetchAll() as $co) {
+        apply_pattern($co);
+        $n = (int) q('SELECT COUNT(*) AS n FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?', [$co['id'], utc_string($next->setTime(0, 0)), utc_string($next->modify('+7 days')->setTime(0, 0))])->fetch()['n'];
+        if ($n > 0) { continue; }
+        send_email((string) $co['user_email'], 'Please set your coaching hours for next week',
+            "Hello {$co['name']},\n\nYou have no hours marked as available for next week at {$co['club_name']}, so nobody can book you.\n\nSet them here: " . $GLOBALS['cfg']['app_url'] . "/coach/availability\n\nTip: set a standing weekly pattern once and it fills in automatically.\n\nPlayMoreCricket");
+        q('UPDATE coaches SET availability_reminded_on = ? WHERE id = ?', [$today->format('Y-m-d'), $co['id']]);
+        $sent++;
+    }
+    return $sent;
 }

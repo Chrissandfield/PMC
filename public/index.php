@@ -312,9 +312,20 @@ if ($path === '/coach/availability') {
     $monday = week_start($_REQUEST['week'] ?? null);
     if ($method === 'POST' && $coach) {
         csrf_check();
-        save_availability($coach, $monday, (array) ($_POST['slot'] ?? []), (int) ($_POST['repeat'] ?? 0));
-        audit((int) $u['id'], 'availability_saved', $coach['name'] . ' week ' . $monday->format('Y-m-d'));
-        flash('Availability saved for ' . $coach['name'] . '.');
+        $act = (string) ($_POST['action'] ?? 'week');
+        if ($act === 'pattern') {
+            save_pattern($coach, (array) ($_POST['pat'] ?? []));
+            audit((int) $u['id'], 'pattern_saved', $coach['name']);
+            flash('Standing weekly pattern saved for ' . $coach['name'] . '. The next ' . PATTERN_WEEKS . ' weeks are filled in; weeks you edited by hand are left alone.');
+        } elseif ($act === 'reset') {
+            reset_week_to_pattern($coach, $monday);
+            audit((int) $u['id'], 'week_reset_to_pattern', $coach['name'] . ' week ' . $monday->format('Y-m-d'));
+            flash('That week is back to the standing pattern.');
+        } else {
+            save_availability($coach, $monday, (array) ($_POST['slot'] ?? []), (int) ($_POST['repeat'] ?? 0));
+            audit((int) $u['id'], 'availability_saved', $coach['name'] . ' week ' . $monday->format('Y-m-d'));
+            flash('Availability saved for ' . $coach['name'] . '.');
+        }
         redirect('/coach/availability?week=' . $monday->format('Y-m-d') . ($manager ? '&coach=' . (int) $coach['id'] : ''));
     }
     $b = '<h1>Coach availability</h1>';
@@ -325,6 +336,7 @@ if ($path === '/coach/availability') {
     }
     if (!$coach) { page('Coach availability', $b . '<p>Choose a coach.</p>'); }
     $nets = club_nets((int) $club['id']);
+    apply_pattern($coach);
     $have = week_availability((int) $club['id'], $monday)[(int) $coach['id']] ?? [];
     $b .= '<p class="muted">Tick the hours <strong>' . h($coach['name']) . '</strong> is available to coach. Only ticked hours can be booked by visitors.</p>'
         . '<p class="weeknav"><a href="/coach/availability?week=' . $monday->modify('-7 days')->format('Y-m-d') . ($manager ? '&coach=' . (int) $coach['id'] : '') . '">← Previous week</a> <strong>Week of ' . $monday->format('j M Y') . '</strong> <a href="/coach/availability?week=' . $monday->modify('+7 days')->format('Y-m-d') . ($manager ? '&coach=' . (int) $coach['id'] : '') . '">Next week →</a></p>';
@@ -349,8 +361,26 @@ if ($path === '/coach/availability') {
         }
         $b .= '</tr>';
     }
-    $b .= '</tbody></table></div><label>Also use this pattern for the next <select name="repeat" style="display:inline;width:auto"><option value="0">0 weeks (just this week)</option><option value="1">1 week</option><option value="3">3 weeks</option><option value="7">7 weeks</option><option value="11">11 weeks</option></select></label>'
+    $b .= '</tbody></table></div><label>Also use this pattern for the next <select name="repeat" class="inline"><option value="0">0 weeks (just this week)</option><option value="1">1 week</option><option value="3">3 weeks</option><option value="7">7 weeks</option><option value="11">11 weeks</option></select></label>'
         . '<button type="submit">Save availability</button></form>';
+    $b .= '<form method="post" class="inlineform">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '"><input type="hidden" name="action" value="reset"><button type="submit" class="secondary">Put this week back to my standing pattern</button></form>';
+    // Standing weekly pattern: same weekday and hour every week, filled in automatically for the next weeks.
+    $pat = []; foreach (coach_pattern((int) $coach['id']) as [$pd, $ph]) { $pat[$pd . '-' . $ph] = true; }
+    $pmin = 24; $pmax = 0;
+    foreach ($nets as $n) { foreach (q('SELECT weekday, MIN(open_hour) AS a, MAX(close_hour) AS z FROM opening_hours WHERE net_id = ? AND NOT is_closed GROUP BY weekday', [$n['id']])->fetchAll() as $r) { $pmin = min($pmin, (int) $r['a']); $pmax = max($pmax, (int) $r['z']); } }
+    if ($pmin >= $pmax) { $pmin = 8; $pmax = 21; }
+    $dn = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    $b .= '<h2>Standing weekly pattern</h2><p class="muted">Set your usual hours once, for example Tuesdays and Thursdays 5 to 8pm. They fill in automatically for each new week, and you can still change any single week above. We email you on Sundays if next week is empty.</p>'
+        . '<form method="post">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '"><input type="hidden" name="action" value="pattern">'
+        . '<div class="scroll"><table class="diary"><thead><tr><th></th>';
+    foreach ($dn as $d) { $b .= '<th>' . $d . '</th>'; }
+    $b .= '</tr></thead><tbody>';
+    for ($h = $pmin; $h < $pmax; $h++) {
+        $b .= '<tr><th>' . sprintf('%02d:00', $h) . '</th>';
+        for ($i = 0; $i < 7; $i++) { $k = $i . '-' . $h; $b .= '<td class="' . (isset($pat[$k]) ? 'free' : '') . '"><input type="checkbox" name="pat[]" value="' . $k . '"' . (isset($pat[$k]) ? ' checked' : '') . ' aria-label="' . $dn[$i] . ' ' . sprintf('%02d:00', $h) . '"></td>'; }
+        $b .= '</tr>';
+    }
+    $b .= '</tbody></table></div><button type="submit">Save standing pattern</button></form>';
     page('Coach availability', $b);
 }
 
