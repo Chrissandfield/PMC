@@ -562,6 +562,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         $when = DateTimeImmutable::createFromFormat('!Y-m-d\TH', $start, london());
         if (!$when) { redirect($self); }
         $old = $_SESSION['reserve_old'] ?? []; unset($_SESSION['reserve_old']);
+        if (!$old && ($_GET['kind'] ?? '') === 'coach') { $old = ['kind' => 'coach', 'coach_id' => (int) ($_GET['coach'] ?? 0)]; }
         $v = fn(string $k) => h((string) ($old[$k] ?? ''));
         [$freeC] = coaches_for_hour((int) $club['id'], $when);
         $co = ''; foreach ($freeC as $c) { $co .= '<option value="' . (int) $c['id'] . '"' . ((int) ($old['coach_id'] ?? 0) === (int) $c['id'] ? ' selected' : '') . '>' . h($c['name']) . ' · ' . h($c['qualification']) . ' · ' . money((int) $c['hourly_price_pence']) . '</option>'; }
@@ -638,8 +639,12 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         $b .= '</ul>';
     }
     if (!$group) { page($club['name'], $b . '<p>No nets are listed yet.</p>'); }
+    apply_patterns_for_club((int) $club['id']);
     $avail = week_availability((int) $club['id'], $monday); $cbusy = week_coach_busy((int) $club['id'], $monday);
-    $nFree = function (string $key) use ($avail, $cbusy): int { $n = 0; foreach ($avail as $cid => $hrs) { if (isset($hrs[$key]) && !isset($cbusy[$cid][$key])) { $n++; } } return $n; };
+    $fcId = (int) ($_GET['fc'] ?? 0); $fcOnly = !empty($_GET['cf']) || $fcId > 0;
+    if ($fcId && !isset(array_column($coaches, null, 'id')[$fcId])) { $fcId = 0; }
+    $fq = ($fcOnly ? '&cf=1' : '') . ($fcId ? '&fc=' . $fcId : '');
+    $nFree = function (string $key) use ($avail, $cbusy, $fcId): int { $n = 0; foreach ($avail as $cid => $hrs) { if ($fcId && $cid !== $fcId) { continue; } if (isset($hrs[$key]) && !isset($cbusy[$cid][$key])) { $n++; } } return $n; };
     $prev = $monday->modify('-7 days')->format('Y-m-d'); $next = $monday->modify('+7 days')->format('Y-m-d');
     $nonmember = array_map(fn($n) => (int) $n['nonmember_price_pence'], $group);
     $priceTxt = min($nonmember) === max($nonmember) ? money(min($nonmember)) : 'from ' . money(min($nonmember));
@@ -647,15 +652,21 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     // Choosers: visitors pick a type of net, staff pick a named net (only shown when there is a choice)
     $tabs = '';
     if ($type !== null && count($types) > 1) {
-        foreach ($types as $t) { $tabs .= '<a href="' . $self . '?type=' . $t . '&week=' . $monday->format('Y-m-d') . '"' . ($t === $type ? ' class="on" aria-current="page"' : '') . '>' . ucfirst($t) . '</a> '; }
+        foreach ($types as $t) { $tabs .= '<a href="' . $self . '?type=' . $t . '&week=' . $monday->format('Y-m-d') . $fq . '"' . ($t === $type ? ' class="on" aria-current="page"' : '') . '>' . ucfirst($t) . '</a> '; }
     } elseif ($type === null && count($nets) > 1) {
-        foreach ($nets as $tn) { $tabs .= '<a href="' . $self . '?net=' . (int) $tn['id'] . '&week=' . $monday->format('Y-m-d') . '"' . ((int) $tn['id'] === $netId ? ' class="on" aria-current="page"' : '') . '>' . h($tn['name']) . '</a> '; }
+        foreach ($nets as $tn) { $tabs .= '<a href="' . $self . '?net=' . (int) $tn['id'] . '&week=' . $monday->format('Y-m-d') . $fq . '"' . ((int) $tn['id'] === $netId ? ' class="on" aria-current="page"' : '') . '>' . h($tn['name']) . '</a> '; }
     }
     $title = $type !== null ? ucfirst($type) . ' nets' : $net['name'];
     $b .= '<h2>' . h($title) . ' diary</h2>' . ($tabs !== '' ? '<p class="daytabs">' . $tabs . '</p>' : '')
         . '<p class="muted">Non-member ' . $priceTxt . '/hr'
         . ($machineNet ? ' · machine +' . money((int) $machineNet['machine_price_pence']) . ' with a coach' : '') . '</p>'
-        . '<p class="weeknav"><a href="' . $self . '?' . $typeQ . '&week=' . $prev . '">← Previous week</a> <strong>Week of ' . $monday->format('j M Y') . '</strong> <a href="' . $self . '?' . $typeQ . '&week=' . $next . '">Next week →</a></p>';
+        . '<p class="weeknav"><a href="' . $self . '?' . $typeQ . '&week=' . $prev . $fq . '">← Previous week</a> <strong>Week of ' . $monday->format('j M Y') . '</strong> <a href="' . $self . '?' . $typeQ . '&week=' . $next . $fq . '">Next week →</a></p>';
+    if ($coaches) {
+        $fo = '<option value="0">Any coach</option>'; foreach ($coaches as $c) { $fo .= '<option value="' . (int) $c['id'] . '"' . ($fcId === (int) $c['id'] ? ' selected' : '') . '>' . h($c['name']) . '</option>'; }
+        $b .= '<form method="get" class="card row coachfilter">' . ($type !== null ? '<input type="hidden" name="type" value="' . h($type) . '">' : '<input type="hidden" name="net" value="' . $netId . '">')
+            . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><label class="check"><input type="checkbox" name="cf" value="1"' . ($fcOnly ? ' checked' : '') . '> Show only hours with a coach available</label>'
+            . '<label>Coach<select name="fc">' . $fo . '</select></label><button type="submit">Apply</button></form>';
+    }
     // Bookings and opening hours for every net in view
     $bkn = []; $hn = [];
     foreach ($group as $gn) {
@@ -684,8 +695,8 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         if ($open[$i]) { $minH = min($minH, $open[$i][0]); $maxH = max($maxH, $open[$i][1]); }
     }
     $manager = can_manage($user, $club); $mine = own_coach($user, $club); $now = new DateTimeImmutable('now', london()); $online = online_booking_enabled($club);
-    $link = function (DateTimeImmutable $d, int $h, array $freeNet) use ($self, $staff, $type, $netId): string {
-        $q = ($type !== null ? 'type=' . $type : 'net=' . (int) $freeNet['id']) . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h);
+    $link = function (DateTimeImmutable $d, int $h, array $freeNet) use ($self, $staff, $type, $netId, $fcOnly, $fcId): string {
+        $q = ($type !== null ? 'type=' . $type : 'net=' . (int) $freeNet['id']) . '&start=' . $d->format('Y-m-d') . 'T' . sprintf('%02d', $h) . (!$staff && $fcOnly ? '&kind=coach' . ($fcId ? '&coach=' . $fcId : '') : '');
         return $self . ($staff ? '/book' : '/reserve') . '?' . $q;
     };
     $coachTxt = function (string $key) use ($nFree): string { $n = $nFree($key); return $n ? '<small>' . $n . ' coach' . ($n > 1 ? 'es' : '') . '</small>' : ''; };
@@ -709,8 +720,9 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
                 }
                 $b .= '</td>';
             } elseif ($past) { $b .= '<td class="closed">–</td>'; }
-            elseif ($staff || $online) { $b .= '<td class="free"><a href="' . $link($d, $h, $freeNet) . '">Book</a>' . ($coachTxt($key) !== '' ? '<br>' . $coachTxt($key) : '') . '</td>'; }
-            else { $b .= '<td class="free">Free' . ($coachTxt($key) !== '' ? '<br>' . $coachTxt($key) : '') . '</td>'; }
+            elseif ($fcOnly && !$nFree($key)) { $b .= '<td class="dim">–</td>'; }
+            elseif ($staff || $online) { $b .= '<td class="free' . ($fcOnly ? ' coachy' : '') . '"><a href="' . $link($d, $h, $freeNet) . '">Book</a>' . ($coachTxt($key) !== '' ? '<br>' . $coachTxt($key) : '') . '</td>'; }
+            else { $b .= '<td class="free' . ($fcOnly ? ' coachy' : '') . '">Free' . ($coachTxt($key) !== '' ? '<br>' . $coachTxt($key) : '') . '</td>'; }
         }
         $b .= '</tr>';
     }
@@ -721,7 +733,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     $b .= '<div class="daylist"><p class="daytabs">';
     for ($i = 0; $i < 7; $i++) {
         $dd = $monday->modify("+$i days");
-        $b .= '<a href="' . $self . '?' . $typeQ . '&week=' . $monday->format('Y-m-d') . '&day=' . $dd->format('Y-m-d') . '"' . ($dd->format('Y-m-d') === $selDay->format('Y-m-d') ? ' class="on" aria-current="date"' : '') . '>' . $dd->format('D j') . '</a>';
+        $b .= '<a href="' . $self . '?' . $typeQ . '&week=' . $monday->format('Y-m-d') . '&day=' . $dd->format('Y-m-d') . $fq . '"' . ($dd->format('Y-m-d') === $selDay->format('Y-m-d') ? ' class="on" aria-current="date"' : '') . '>' . $dd->format('D j') . '</a>';
     }
     $b .= '</p><h3>' . h($selDay->format('l j F')) . '</h3><ul class="plain slots">';
     $si = (int) $selDay->format('N') - 1; $any = false;
@@ -730,6 +742,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
             $key = $selDay->format('Y-m-d') . ' ' . sprintf('%02d', $h); $past = $selDay->setTime($h, 0) <= $now; if ($past) { continue; }
             [$state, $x, $freeNet] = $cell($si, $h, $key);
             if ($state === 'closed') { continue; }
+            if ($fcOnly && $state === 'free' && !$nFree($key)) { continue; }
             $any = true; $lab = sprintf('%02d:00', $h);
             if ($state === 'taken') { $b .= '<li class="taken"><strong>' . $lab . '</strong> ' . ($staff ? h(($x['booking_type'] === 'blocked' ? 'Blocked' : ($x['customer_name'] ?: ucfirst($x['booking_type']))) . ($x['coach_name'] ? ' · ' . $x['coach_name'] : '')) : 'BOOKED') . '</li>'; }
             elseif ($staff || $online) { $b .= '<li class="free"><strong>' . $lab . '</strong> <a href="' . $link($selDay, $h, $freeNet) . '">Book</a> ' . $coachTxt($key) . '</li>'; }
