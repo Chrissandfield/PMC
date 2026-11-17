@@ -20,7 +20,7 @@ const CREST_TYPES = ['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/webp' =
 
 const DOC_MAX_BYTES = 2097152;
 
-const QUALIFICATIONS = ['', 'ECB Support Coach (Level 1)', 'ECB Foundation Coach (Level 2)', 'ECB Core Coach (Level 3)', 'ECB Advanced Coach (Level 4)', 'ECB Specialist Coach (Level 5)', 'Other'];
+const QUALIFICATIONS = ['', 'ECB Support Coach (Level 1)', 'ECB Foundation Coach (Level 2)', 'ECB Core Coach (Level 3)', 'ECB Advanced Coach (Level 4)', 'ECB Specialist Coach (Level 5)', 'None (no formal qualification)', 'Other'];
 
 function slugify(string $name): string
 {
