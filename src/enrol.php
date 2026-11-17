@@ -18,6 +18,8 @@ const ADMIN_NOTICE_EMAIL = 'hello@playmorecricket.com';
 const CREST_MAX_BYTES = 1048576;
 const CREST_TYPES = ['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/webp' => 'webp'];
 
+const DOC_MAX_BYTES = 2097152;
+
 const QUALIFICATIONS = ['', 'ECB Support Coach (Level 1)', 'ECB Foundation Coach (Level 2)', 'ECB Core Coach (Level 3)', 'ECB Advanced Coach (Level 4)', 'ECB Specialist Coach (Level 5)', 'Other'];
 
 function slugify(string $name): string
@@ -45,6 +47,23 @@ function crest_from_upload(?array $f): array
         return ['The crest must be a PNG, JPG or WebP picture (not a PDF or Word file).', null, null];
     }
     return [null, $info['mime'], base64_encode($raw)];
+}
+
+/** Check an uploaded policy document (PDF, Word). Returns [error|null, mime|null, base64|null, cleanName|null]. */
+function document_from_upload(?array $f): array
+{
+    if (!$f || ($f['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) { return [null, null, null, null]; }
+    if ($f['error'] === UPLOAD_ERR_INI_SIZE || $f['error'] === UPLOAD_ERR_FORM_SIZE || ($f['size'] ?? 0) > DOC_MAX_BYTES) { return ['The policy file is too big. Please use a file under 2 MB, or put it online and send the link.', null, null, null]; }
+    if ($f['error'] !== UPLOAD_ERR_OK || (!is_uploaded_file($f['tmp_name']) && getenv('PMC_TEST_UPLOADS') !== '1')) { return ['The policy file could not be uploaded. Please try again.', null, null, null]; }
+    $raw = (string) file_get_contents($f['tmp_name']);
+    $ext = strtolower(pathinfo((string) $f['name'], PATHINFO_EXTENSION));
+    $mime = null;
+    if (str_starts_with($raw, '%PDF') && $ext === 'pdf') { $mime = 'application/pdf'; }
+    elseif (str_starts_with($raw, "PK\x03\x04") && $ext === 'docx') { $mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'; }
+    elseif (str_starts_with($raw, "\xD0\xCF\x11\xE0") && $ext === 'doc') { $mime = 'application/msword'; }
+    if ($mime === null) { return ['The policy must be a PDF or Word file (.pdf, .docx or .doc).', null, null, null]; }
+    $clean = mb_substr(preg_replace('/[^A-Za-z0-9._ -]+/', '_', basename((string) $f['name'])), 0, 120);
+    return [null, $mime, base64_encode($raw), $clean];
 }
 
 function pence_from(string $pounds): ?int
@@ -116,6 +135,9 @@ function enrol_create(array $in): array
     if (!filter_var($semail, FILTER_VALIDATE_EMAIL)) { $err[] = "Add the safeguarding officer's email address. We send their confirmation link there."; }
     if ($policy === 'link' && !preg_match('#^https?://\S+$#i', $plink)) { $err[] = 'Add the web link to the safeguarding policy, starting with https://'; }
     elseif ($policy === 'no' || !in_array($policy, ['attached', 'link'], true)) { $err[] = 'We need a written safeguarding policy before we can list a club.'; }
+    [$docErr, $docMime, $docB64, $docName] = document_from_upload($_FILES['policy_file'] ?? null);
+    if ($docErr) { $err[] = $docErr; }
+    elseif ($policy === 'attached' && $docB64 === null) { $err[] = 'Please attach the safeguarding policy file, or choose "Yes, it is online" and add the link.'; }
     foreach (['cf1', 'cf2', 'cf3', 'cf4'] as $c) { if (empty($in[$c])) { $err[] = 'Please tick all the confirmations at the bottom.'; break; } }
 
     // Nets: up to 4 lines (number, type, member price, non-member price). Blank lines are ignored.
@@ -160,10 +182,11 @@ function enrol_create(array $in): array
     q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at)
        VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)",
       [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $isEmail ? null : $cdetail, $isEmail ? $cdetail : null,
-       $cname, $cdetail, $sname, $semail, $policy === 'link' ? $plink : 'Written policy to be sent to hello@playmorecricket.com', now_utc()]);
+       $cname, $cdetail, $sname, $semail, $policy === 'link' ? $plink : 'Uploaded file: ' . ($docName ?? 'policy'), now_utc()]);
     $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
 
     if ($crestB64 !== null) { q('INSERT INTO club_crests (club_id, mime, data_b64, permission_given_by) VALUES (?,?,?,?)', [$clubId, $crestMime, $crestB64, $cname]); }
+    if ($policy === 'attached' && $docB64 !== null) { q('INSERT INTO club_documents (club_id, kind, filename, mime, data_b64) VALUES (?,?,?,?,?)', [$clubId, 'safeguarding', $docName, $docMime, $docB64]); }
     $outdoorExists = (bool) array_filter($groups, fn($g) => $g['type'] === 'outdoor');
     foreach (['outdoor', 'indoor'] as $type) {
         $n = 0;
@@ -198,7 +221,7 @@ function enrol_create(array $in): array
         send_email($cdetail, 'We have received ' . $club . "'s application", "Hello $cname,\n\nThank you for applying to list $club on PlayMoreCricket.\n\n"
             . "We have emailed $sname, your safeguarding officer, a private link to confirm the club's safeguarding policy and your coaches' DBS checks. "
             . "Once that is done we will review your application and let you know when the club is live.\n\n"
-            . ($policy === 'attached' ? "Please also email your written safeguarding policy to hello@playmorecricket.com.\n\n" : '') . ($crestB64 === null ? "Please also email your club crest or logo to hello@playmorecricket.com, or we will add it later.\n\n" : '')
+            . ($crestB64 === null ? "Please also email your club crest or logo to hello@playmorecricket.com, or we will add it later.\n\n" : '')
             . 'PlayMoreCricket');
     }
     send_email(ADMIN_NOTICE_EMAIL, 'New club application: ' . $club, "$club ($town) has applied. Review it in /admin: " . $GLOBALS['cfg']['app_url'] . "/admin\n");
@@ -285,9 +308,10 @@ function enrol_form_html(array $old = []): string
         . implode('', array_map(fn($i) => '<option value="' . $i . '"' . ((int) ($old['officer_coach'] ?? 0) === $i ? ' selected' : '') . '>Yes, coach line ' . $i . '</option>', range(1, 6))) . '</select>'
         . '<span class="muted">They cannot confirm their own DBS check, so we will ask the key contact to.</span></label>'
         . '<label>Does the club have a written safeguarding policy?<select name="policy"><option value="">Choose one</option>'
-        . '<option value="attached"' . (($old['policy'] ?? '') === 'attached' ? ' selected' : '') . '>Yes, I will email it to hello@playmorecricket.com</option>'
+        . '<option value="attached"' . (($old['policy'] ?? '') === 'attached' ? ' selected' : '') . '>Yes, I will attach the file below</option>'
         . '<option value="link"' . (($old['policy'] ?? '') === 'link' ? ' selected' : '') . '>Yes, it is online</option>'
         . '<option value="no"' . (($old['policy'] ?? '') === 'no' ? ' selected' : '') . '>Not yet</option></select></label>'
+        . '<label>Attach the policy (PDF or Word, under 2 MB)<input type="file" name="policy_file" accept=".pdf,.doc,.docx,application/pdf"><span class="muted">Only you and PlayMoreCricket administrators can see this file.</span></label>'
         . '<label>Link to the policy (if online)<input name="plink" maxlength="200" value="' . $v('plink') . '" placeholder="https://"></label>'
         . '<p class="notice">We do not list a club until we have seen its safeguarding policy.</p></fieldset>';
     $b .= '<fieldset class="card"><legend>Please confirm</legend>'

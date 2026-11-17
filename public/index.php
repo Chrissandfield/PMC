@@ -76,7 +76,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/confirm', '/admin/coach/dbs'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -176,6 +176,14 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         audit((int) $user['id'], 'dbs_set_by_hand', $co['name'] . ' (' . $co['club_slug'] . '): ' . $note);
         flash('DBS check recorded for ' . $co['name'] . '.'); redirect('/admin');
     }
+    if ($path === '/admin/policy' && $method === 'GET') {
+        $d = q("SELECT filename, mime, data_b64 FROM club_documents WHERE club_id = ? AND kind = 'safeguarding' ORDER BY id DESC LIMIT 1", [(int) ($_GET['club'] ?? 0)])->fetch();
+        if (!$d) { http_response_code(404); page('Not found', '<p>No policy file for that club.</p>'); }
+        audit((int) $user['id'], 'policy_downloaded', 'club ' . (int) $_GET['club']);
+        header('Content-Type: ' . $d['mime']); header('X-Content-Type-Options: nosniff'); header('Cache-Control: private, no-store');
+        header('Content-Disposition: attachment; filename="' . str_replace('"', '', $d['filename']) . '"');
+        echo base64_decode($d['data_b64']); exit;
+    }
     if ($path === '/admin/users/update' && $method === 'POST') {
         csrf_check();
         $id = (int) ($_POST['id'] ?? 0); $email = trim((string) ($_POST['email'] ?? '')); $name = trim((string) ($_POST['name'] ?? '')); $pw = (string) ($_POST['password'] ?? '');
@@ -248,7 +256,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         foreach ($pend as $c) {
             $co = q('SELECT name, dbs_checked, dbs_method, dbs_confirmed_by, dbs_checked_on FROM coaches WHERE club_id = ? ORDER BY id', [$c['id']])->fetchAll();
             $b .= '<div class="card"><strong>' . h($c['name']) . '</strong> <span class="muted">' . h($c['town']) . ' · applied ' . h(from_utc($c['submitted_at'])->format('j M Y')) . '</span>'
-                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . '</p>'
+                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . (q("SELECT 1 FROM club_documents WHERE club_id = ? AND kind = 'safeguarding'", [$c['id']])->fetch() ? ' &middot; <a href="/admin/policy?club=' . (int) $c['id'] . '">Download the file</a>' : '') . '</p>'
                 . '<p>' . (!empty($c['safeguarding_confirmed_at']) ? '&#10003; Policy confirmed by ' . h((string) $c['safeguarding_confirmed_by']) . ' on ' . h(from_utc($c['safeguarding_confirmed_at'])->format('j M Y')) : 'Safeguarding policy: <strong>not yet confirmed</strong>') . '</p><ul>';
             foreach ($co as $x) {
                 $b .= '<li>' . h($x['name']) . ': ' . ($x['dbs_checked'] ? '&#10003; ' . h(method_label($x['dbs_method'])) . ' on ' . h(date('j M Y', strtotime((string) $x['dbs_checked_on']))) . ' (confirmed by ' . h((string) $x['dbs_confirmed_by']) . ')' : '<strong>not yet confirmed</strong>') . '</li>';
