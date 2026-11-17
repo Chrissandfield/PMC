@@ -301,6 +301,24 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
     page('Admin', $b);
 }
 
+if ($method === 'GET' && preg_match('#^/calendar/(club|coach)/([0-9a-f]{32})\.ics$#', $path, $fm)) { serve_feed($fm[1], $fm[2]); }
+if ($path === '/calendar/renew' && $method === 'POST') {
+    $u = require_login(); csrf_check();
+    $kind = (string) ($_POST['kind'] ?? ''); $id = (int) ($_POST['id'] ?? 0);
+    if ($kind === 'club') {
+        $club = q('SELECT * FROM clubs WHERE id = ?', [$id])->fetch();
+        if (!$club || !can_manage($u, $club)) { http_response_code(403); page('Not allowed', '<p>Not allowed.</p>'); }
+        feed_token('clubs', $id, true);
+    } elseif ($kind === 'coach') {
+        $co = q('SELECT * FROM coaches WHERE id = ?', [$id])->fetch(); $club = $co ? q('SELECT * FROM clubs WHERE id = ?', [$co['club_id']])->fetch() : null;
+        $own = $club ? own_coach($u, $club) : null;
+        if (!$co || !(can_manage($u, $club) || ($own && (int) $own['id'] === $id))) { http_response_code(403); page('Not allowed', '<p>Not allowed.</p>'); }
+        feed_token('coaches', $id, true);
+    } else { http_response_code(400); page('Error', '<p>Bad request.</p>'); }
+    audit((int) $u['id'], 'calendar_link_renewed', $kind . ' ' . $id);
+    flash('New calendar link made. Add the new link to your calendar; the old one no longer works.');
+    $ret = (string) ($_POST['return'] ?? '/'); redirect(preg_match('#^/[A-Za-z0-9/_?=&.-]*$#', $ret) && strpos($ret, '//') === false ? $ret : '/');
+}
 if ($path === '/coach/availability') {
     $u = require_login();
     if (!$u['club_id']) { http_response_code(403); page('Not allowed', '<p>This page is for club staff.</p>'); }
@@ -381,6 +399,7 @@ if ($path === '/coach/availability') {
         $b .= '</tr>';
     }
     $b .= '</tbody></table></div><button type="submit">Save standing pattern</button></form>';
+    $b .= calendar_box('coach', (int) $coach['id'], csrf_field(), '/coach/availability?coach=' . (int) $coach['id']);
     page('Coach availability', $b);
 }
 
@@ -759,6 +778,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
             . '<span><strong>' . h($state) . '</strong><br><span class="muted">Customers pay the club directly through Stripe. Commission to PlayMoreCricket: ' . h(rtrim(rtrim((string) $club['commission_pct'], '0'), '.')) . '%.</span></span>'
             . ((int) $club['stripe_charges_enabled'] === 1 ? '' : '<button type="submit">' . (empty($club['stripe_account_id']) ? 'Set up payments' : 'Continue Stripe sign-up') . '</button>') . '</form>';
     }
+    if ($manager) { $b .= calendar_box('club', (int) $club['id'], csrf_field(), '/club/' . $club['slug']); }
     page($club['name'], $b);
 }
 

@@ -59,3 +59,4 @@ select.inline{display:inline;width:auto}
 .coachfilter{align-items:end;gap:12px;margin:8px 0}
 td.dim{color:var(--muted,#999);opacity:.45;text-align:center}
 td.coachy,li.free.coachy{outline:2px solid var(--accent,#1f6b43);outline-offset:-2px}
+input.feedurl{width:100%;font-family:ui-monospace,monospace;font-size:.85rem}
