@@ -16,7 +16,7 @@ v=client()
 s,h,_=req(v,'/enrol'); ok(s==200 and 'Enrol your club' in h,'form loads')
 form={'csrf':csrf(h),'club':'Test Vale CC','town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cdetail':'kay@test.local',
  'sname':'Sam Safe','semail':'sam@test.local','policy':'link','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1',
- 'g_num[]':['3','1','',''],'g_type[]':['outdoor','indoor','outdoor','outdoor'],'g_member[]':['0','0','',''],'g_non[]':['10','15','',''],
+ 'g_type[]':['outdoor','outdoor','outdoor','indoor','outdoor','outdoor'],'g_member[]':['0','0','0','0','',''],'g_non[]':['10','10','10','15','',''],
  'c_name[]':['Sam Safe','Pat Coach','','','',''],'c_price[]':['30','25','','','',''],'c_qual[]':['ECB Core Coach (Level 3)','ECB Foundation Coach (Level 2)','','','',''],'c_other[]':['']*6}
 for d in range(7): form[f'open[{d}]']='9'; form[f'close[{d}]']='19'
 bad=dict(form); bad['policy']='no'

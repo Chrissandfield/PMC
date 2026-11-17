@@ -430,7 +430,7 @@ if ($path === '/enrol') {
     if ($method === 'POST') {
         csrf_check();
         $in = $_POST;
-        foreach (($in['g_num'] ?? []) as $i => $x) { $in['g_num_' . $i] = $x; $in['g_type_' . $i] = $in['g_type'][$i] ?? ''; $in['g_member_' . $i] = $in['g_member'][$i] ?? ''; $in['g_non_' . $i] = $in['g_non'][$i] ?? ''; }
+        foreach (($in['g_type'] ?? []) as $i => $x) { $in['g_type_' . $i] = $x; $in['g_member_' . $i] = $in['g_member'][$i] ?? ''; $in['g_non_' . $i] = $in['g_non'][$i] ?? ''; }
         foreach (($in['c_name'] ?? []) as $i => $x) { $in['c_name_' . $i] = $x; $in['c_price_' . $i] = $in['c_price'][$i] ?? ''; $in['c_qual_' . $i] = $in['c_qual'][$i] ?? ''; $in['c_other_' . $i] = $in['c_other'][$i] ?? ''; }
         [$ok, $msg] = enrol_create($_POST);
         if ($ok) { page('Application received', '<h1>Thank you</h1><p class="lead">We have emailed your safeguarding officer a private link to confirm the club\'s safeguarding details. When that is done we will review the application and let you know.</p><p><a href="/">Back to the home page</a></p>'); }

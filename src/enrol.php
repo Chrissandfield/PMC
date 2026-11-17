@@ -140,16 +140,16 @@ function enrol_create(array $in): array
     elseif ($policy === 'attached' && $docB64 === null) { $err[] = 'Please attach the safeguarding policy file, or choose "Yes, it is online" and add the link.'; }
     foreach (['cf1', 'cf2', 'cf3', 'cf4'] as $c) { if (empty($in[$c])) { $err[] = 'Please tick all the confirmations at the bottom.'; break; } }
 
-    // Nets: up to 4 lines (number, type, member price, non-member price). Blank lines are ignored.
+    // Nets: one row per net (type, member price, non-member price). Blank rows are ignored.
     $groups = [];
-    foreach (($in['g_num'] ?? []) as $i => $num) {
-        $num = (int) $num; $type = (string) ($in['g_type'][$i] ?? 'outdoor'); $mem = trim((string) ($in['g_member'][$i] ?? '')); $non = trim((string) ($in['g_non'][$i] ?? ''));
-        if ($num === 0 && $non === '') { continue; }
+    foreach (($in['g_type'] ?? []) as $i => $type) {
+        $type = (string) $type; $mem = trim((string) ($in['g_member'][$i] ?? '')); $non = trim((string) ($in['g_non'][$i] ?? ''));
+        if ($non === '' && $mem === '') { continue; }
         $mp = pence_from($mem === '' ? '0' : $mem); $np = pence_from($non);
-        if ($num < 1 || $num > 20 || !in_array($type, ['outdoor', 'indoor'], true) || $mp === null || $np === null || $np <= 0) { $err[] = 'Check the nets on line ' . ($i + 1) . ': a number, a type, and prices (a non-member price is needed).'; continue; }
-        $groups[] = ['num' => $num, 'type' => $type, 'member' => $mp, 'non' => $np];
+        if (!in_array($type, ['outdoor', 'indoor'], true) || $mp === null || $np === null || $np <= 0) { $err[] = 'Check Net ' . ($i + 1) . ': a type and prices (a non-member price is needed).'; continue; }
+        $groups[] = ['num' => 1, 'type' => $type, 'member' => $mp, 'non' => $np];
     }
-    if (!$groups) { $err[] = 'Add at least one kind of net.'; }
+    if (!$groups) { $err[] = 'Add at least one net.'; }
     $machine = !empty($in['machine']); $mprice = $machine ? pence_from(trim((string) ($in['mprice'] ?? ''))) : null;
     if ($machine && ($mprice === null || $mprice <= 0)) { $err[] = 'Add the bowling machine price per hour.'; }
     $mcoach = !empty($in['mcoach']);
@@ -276,12 +276,13 @@ function enrol_form_html(array $old = []): string
        . '<label class="check"><input type="checkbox" name="crest_ok" value="1"> I confirm the club owns this crest or logo, or has the right to use it, and gives PlayMoreCricket permission to display it on the club\'s page and in the club list for as long as the club is listed.</label>'
        . '<label>Key contact name<input name="cname" maxlength="160" value="' . $v('cname') . '" required></label>'
        . '<label>Key contact email (or phone)<input name="cdetail" maxlength="190" value="' . $v('cdetail') . '" required></label></fieldset>';
-    $b .= '<fieldset class="card"><legend>Net hire</legend><p class="muted">One line for each kind of net. For example 3 outdoor nets and 1 indoor net are two lines. Visitors choose indoor or outdoor and we give them a free net of that type. Leave unused lines empty.</p>';
-    for ($i = 0; $i < 4; $i++) {
-        $b .= '<div class="row"><label>How many<input name="g_num[]" type="number" min="0" max="20" size="3" value="' . $v('g_num_' . $i) . '"></label>'
-            . '<label>Type' . $sel('g_type[]', ['outdoor', 'indoor'], (string) ($old['g_type_' . $i] ?? 'outdoor')) . '</label>'
-            . '<label>Members, &pound; per hour<input name="g_member[]" inputmode="decimal" size="5" value="' . $v('g_member_' . $i) . '" placeholder="0 if free"></label>'
-            . '<label>Non-members, &pound; per hour<input name="g_non[]" inputmode="decimal" size="5" value="' . $v('g_non_' . $i) . '"></label></div>';
+    $b .= '<fieldset class="card"><legend>Net hire</legend><p class="muted">List each net on its own line. Visitors choose indoor or outdoor and we give them a free net of that type. Leave unused lines empty.</p>';
+    $b .= '<div class="netgrid nethead" aria-hidden="true"><span></span><span>Type</span><span>Members, &pound;/hour</span><span>Non-members, &pound;/hour</span></div>';
+    for ($i = 0; $i < 6; $i++) {
+        $b .= '<div class="netgrid"><strong>Net ' . ($i + 1) . '</strong>'
+            . '<select name="g_type[]" aria-label="Net ' . ($i + 1) . ' type">' . implode('', array_map(fn($o) => '<option value="' . $o . '"' . ($o === (string) ($old['g_type_' . $i] ?? 'outdoor') ? ' selected' : '') . '>' . ucfirst($o) . '</option>', ['outdoor', 'indoor'])) . '</select>'
+            . '<input name="g_member[]" inputmode="decimal" value="' . $v('g_member_' . $i) . '" placeholder="0 if free" aria-label="Net ' . ($i + 1) . ' member price per hour">'
+            . '<input name="g_non[]" inputmode="decimal" value="' . $v('g_non_' . $i) . '" aria-label="Net ' . ($i + 1) . ' non-member price per hour"></div>';
     }
     $b .= '<label class="check"><input type="checkbox" name="machine" value="1"' . (!empty($old['machine']) ? ' checked' : '') . '> We have a bowling machine</label>'
         . '<div class="row"><label>Machine price, &pound; per hour<input name="mprice" inputmode="decimal" size="5" value="' . $v('mprice') . '"></label>'

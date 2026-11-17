@@ -48,3 +48,8 @@ form.enrol legend+*{clear:both}
 form.enrol .dayrow{display:grid;grid-template-columns:3.2rem auto 1fr 1fr;gap:8px;align-items:center;margin:6px 0}
 form.enrol .dayrow label{margin:0}form.enrol .dayrow select{margin:0;width:100%}
 @media (max-width:520px){form.enrol .dayrow{grid-template-columns:3.2rem 1fr 1fr}form.enrol .dayrow label.check{grid-column:1/-1;order:2}}
+form.enrol .netrow strong{min-width:3.6rem;padding-bottom:9px}
+form.enrol .netgrid{display:grid;grid-template-columns:3.6rem 7.5rem 1fr 1fr;gap:8px;align-items:center;margin:6px 0}
+form.enrol .netgrid input,form.enrol .netgrid select{margin:0;width:100%}
+form.enrol .nethead{font-weight:500;font-size:.9rem;margin-bottom:0}
+@media (max-width:520px){form.enrol .netgrid{grid-template-columns:3.2rem 1fr 1fr}form.enrol .netgrid select{grid-column:2/4}form.enrol .netgrid strong{grid-row:span 2}form.enrol .nethead{display:none}}
