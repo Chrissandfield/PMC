@@ -40,3 +40,11 @@ fieldset{border:1px solid var(--line);border-radius:8px;margin:12px 0}
 .clubhead{padding:14px;border-radius:14px;margin:14px 0;color:#fff;background:linear-gradient(90deg,rgba(8,22,14,.9),rgba(8,22,14,.55)),url(/assets/hero.jpg) center 62%/cover no-repeat,#1f3a2a}
 .clubhead h1,.clubhead .muted{color:#fff}.clubhead img{background:#fff;padding:3px;border-radius:6px;height:auto}
 [hidden]{display:none!important}
+
+.hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+form.enrol fieldset.card{padding:16px 16px 6px;margin:16px 0}
+form.enrol legend{float:left;width:100%;padding:0;margin:0 0 8px;font:600 1.2rem/1.2 'Bricolage Grotesque',Figtree,sans-serif}
+form.enrol legend+*{clear:both}
+form.enrol .dayrow{display:grid;grid-template-columns:3.2rem auto 1fr 1fr;gap:8px;align-items:center;margin:6px 0}
+form.enrol .dayrow label{margin:0}form.enrol .dayrow select{margin:0;width:100%}
+@media (max-width:520px){form.enrol .dayrow{grid-template-columns:3.2rem 1fr 1fr}form.enrol .dayrow label.check{grid-column:1/-1;order:2}}

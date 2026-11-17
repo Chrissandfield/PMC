@@ -243,7 +243,7 @@ function enrol_form_html(array $old = []): string
     $sel = fn(string $name, array $opts, string $cur) => '<select name="' . $name . '">' . implode('', array_map(fn($o) => '<option value="' . h($o) . '"' . ($o === $cur ? ' selected' : '') . '>' . h($o === '' ? 'Choose one' : ucfirst($o)) . '</option>', $opts)) . '</select>';
     $b = '<h1>Enrol your club</h1><p class="lead">Tell us about your nets, opening times and coaches. We email your safeguarding officer a private link to confirm the club\'s policy and each coach\'s DBS check, then we review and list your club.</p>'
        . '<form method="post" action="/enrol" class="enrol" enctype="multipart/form-data">' . csrf_field()
-       . '<div style="position:absolute;left:-9999px" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>';
+       . '<div class="hp" aria-hidden="true"><label>Leave this empty<input name="website" tabindex="-1" autocomplete="off"></label></div>';
     $b .= '<fieldset class="card"><legend>Your club</legend>'
        . '<label>Club name<input name="club" maxlength="160" value="' . $v('club') . '" required></label>'
        . '<label>Town or village<input name="town" maxlength="120" value="' . $v('town') . '" required></label>'
@@ -265,7 +265,7 @@ function enrol_form_html(array $old = []): string
         . '<label class="check"><input type="checkbox" name="mcoach" value="1" checked> Coaches only</label></div></fieldset>';
     $b .= '<fieldset class="card"><legend>Opening times</legend><p class="muted">These repeat every week and apply to all nets.</p>';
     foreach (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as $d => $name) {
-        $b .= '<div class="row"><strong>' . $name . '</strong><label class="check"><input type="checkbox" name="closed[' . $d . ']" value="1"> Closed</label>'
+        $b .= '<div class="dayrow"><strong>' . $name . '</strong><label class="check"><input type="checkbox" name="closed[' . $d . ']" value="1"> Closed</label>'
             . '<select name="open[' . $d . ']" aria-label="' . $name . ' opens">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 8 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(5, 22))) . '</select>'
             . '<select name="close[' . $d . ']" aria-label="' . $name . ' closes">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 20 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(6, 24))) . '</select></div>';
     }
