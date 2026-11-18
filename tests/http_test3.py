@@ -15,19 +15,21 @@ def psql(sql): return subprocess.run(['psql','-d','pmc_test','-tAc',sql],capture
 fails=0
 def ok(c,m):
     global fails; print(('PASS ' if c else 'FAIL ')+m); fails+=0 if c else 1
+psql('UPDATE coaches SET user_id = NULL'); psql('DELETE FROM audit_log'); psql('DELETE FROM users')  # this file starts from a database with no users
 a=client()
 s,h,_=req(a,'/setup'); ok(s==200 and 'Set up PlayMoreCricket' in h,'setup page open while there are no users')
 req(a,'/setup',{'csrf':csrf(h),'name':'Chris','email':'chris@test.local','password':'short'}); ok(psql('select count(*) from users')=='0','short password refused')
 req(a,'/setup',{'csrf':csrf(h),'name':'Chris','email':'chris@test.local','password':'a-long-password-1'}); ok(psql("select role from users where email='chris@test.local'")=='admin','first admin created')
 s,_,_=req(client(),'/setup'); ok(s==404,'setup page gone once a user exists')
 _,h,_=req(a,'/login'); s,_,hd=req(a,'/login',{'csrf':csrf(h),'email':'chris@test.local','password':'a-long-password-1'}); ok(hd.get('Location')=='/admin','admin logs in')
-_,h,_=req(a,'/admin'); ok('1 update(s) waiting' in h and '001_coach_availability' in h,'admin sees 1 pending update')
-req(a,'/admin/migrate',{'csrf':csrf(h)}); ok('Database updated' in flash(a),'Apply updates runs it')
+psql("delete from schema_migrations where name like '001%'"); psql('drop table if exists coach_availability cascade')  # simulate a missing migration
+_,h,_=req(a,'/admin'); ok('up to date' in h,'missing migration is applied automatically on the next request (no manual step)')
+ok(psql("select count(*) from schema_migrations where name like '001%'")=='1','migration recorded again')
 ok(psql("select to_regclass('coach_availability') is not null")=='t','coach_availability table now exists')
 _,h,_=req(a,'/admin'); ok('up to date' in h,'admin shows up to date'); req(a,'/admin/migrate',{'csrf':csrf(h)}); ok('Nothing to update' in flash(a),'running again does nothing')
 # tolerant of a migration someone ran by hand
 psql("delete from schema_migrations")
-_,h,_=req(a,'/admin'); req(a,'/admin/migrate',{'csrf':csrf(h)}); f=flash(a); ok('Database updated' in f and 'stopped' not in f,'already-existing objects are skipped, not an error')
+_,h,_=req(a,'/admin'); req(a,'/admin/migrate',{'csrf':csrf(h)}); f=flash(a); ok('stopped' not in f and psql("select count(*) from schema_migrations")!='0','already-existing objects are skipped, not an error')
 # user management
 _,h,_=req(a,'/admin')
 def add(**k):
