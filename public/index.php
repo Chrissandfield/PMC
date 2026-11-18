@@ -350,7 +350,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             . '<form method="post" action="/admin/users/link" class="card narrow">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $target['id'] . '"><p class="muted">Email not working yet, or they cannot find it? Make a one-time link to send them yourself.</p><button type="submit" class="secondary">Show me a one-time password link</button></form>');
     }
     $pending = pending_migrations();
-    $b = '<h1>Admin</h1><p>Players who agreed to hear from PlayMoreCricket and clubs: <strong>' . count(marketing_list('pmc')) . '</strong> · <a href="/admin/players.csv">Download CSV</a> &nbsp;|&nbsp; Cricket activities, events and offers: <strong>' . count(marketing_list('events')) . '</strong> · <a href="/admin/players.csv?scope=events">Download CSV</a></p><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()
+    $b = '<h1>Admin</h1><p>Players who agreed to hear from PlayMoreCricket and clubs: <strong>' . count(marketing_list('pmc')) . '</strong> · <a href="/admin/players.csv">Download CSV</a> &nbsp;|&nbsp; Cricket activities, events and offers: <strong>' . count(marketing_list('events')) . '</strong> · <a href="/admin/players.csv?scope=events">Download CSV</a> · <a href="/messages">Send a message</a></p><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()
        . '<span>' . ($pending ? '<strong>' . count($pending) . ' update(s) waiting:</strong> ' . h(implode(', ', array_keys($pending))) : 'The database is up to date.') . '</span>'
        . '<button type="submit">Apply updates</button></form>';
     $clubsAll = q('SELECT id, name FROM clubs ORDER BY name')->fetchAll();
@@ -701,6 +701,66 @@ if (preg_match('#^/crest/([a-z0-9-]+)$#', $path, $m)) {
     echo base64_decode($row['data_b64']); exit;
 }
 
+if ($path === '/messages') {
+    $u = require_login();
+    $scopes = sendable_scopes($u);
+    if (!$scopes) { http_response_code(403); page('Not allowed', '<p>You cannot send messages.</p>'); }
+    $scope = (string) ($_REQUEST['scope'] ?? array_key_first($scopes));
+    if ($method === 'POST' && !isset($scopes[$scope])) { csrf_check(); http_response_code(403); page('Not allowed', '<p>You cannot send to that list.</p>'); }
+    if (!isset($scopes[$scope])) { $scope = array_key_first($scopes); }
+    if ($method === 'POST') {
+        csrf_check();
+        $act = (string) ($_POST['action'] ?? '');
+        $subject = trim((string) ($_POST['subject'] ?? '')); $body = trim((string) ($_POST['body'] ?? ''));
+        $back = '/messages?scope=' . urlencode($scope);
+        if ($act === 'batch') {
+            $cid = (int) ($_POST['campaign_id'] ?? 0);
+            $camp = q('SELECT * FROM marketing_campaigns WHERE id = ?', [$cid])->fetch();
+            if (!$camp || !isset($scopes[$camp['scope']])) { flash('That message was not found.', true); redirect($back); }
+            $n = send_campaign_batch($cid); flash($n . ' sent.'); redirect('/messages?scope=' . urlencode($camp['scope']));
+        }
+        if ($subject === '' || mb_strlen($subject) > 150 || $body === '' || mb_strlen($body) > 5000) {
+            flash('Please write a subject (up to 150 characters) and a message (up to 5,000 characters).', true);
+            $_SESSION['msg_draft'] = [$subject, $body]; redirect($back);
+        }
+        if ($act === 'test') {
+            message_send_one($scope, (string) $u['email'], (string) $u['name'], '[TEST] ' . $subject, $body);
+            $_SESSION['msg_draft'] = [$subject, $body];
+            flash('A test copy was sent to ' . $u['email'] . '. Nothing has gone to players.'); redirect($back);
+        }
+        if ($act === 'send') {
+            if (empty($_POST['confirm'])) { flash('Please tick the box to confirm you want to send this.', true); $_SESSION['msg_draft'] = [$subject, $body]; redirect($back); }
+            $cid = queue_campaign($scope, $subject, $body, (int) $u['id']);
+            $p = campaign_progress($cid);
+            $n = send_campaign_batch($cid);
+            flash($n . ' sent now. ' . max(0, $p['queued'] - $n) . ' still waiting: press "Send next batch" or leave them for the daily job.');
+            redirect($back);
+        }
+        redirect($back);
+    }
+    $draft = $_SESSION['msg_draft'] ?? ['', '']; unset($_SESSION['msg_draft']);
+    $count = count(marketing_list($scope));
+    $opts = ''; foreach ($scopes as $k => $lab) { $opts .= '<option value="' . h($k) . '"' . ($k === $scope ? ' selected' : '') . '>' . h($lab) . '</option>'; }
+    $b = '<h1>Send a message</h1><p class="muted">Only people who agreed to this list, and have not unsubscribed, receive it. Every message carries an unsubscribe link. Recipients cannot see each other. Do not use this for booking confirmations or anything the person has not agreed to.</p>'
+       . '<form method="get" class="card row"><label>To<select name="scope">' . $opts . '</select></label><button type="submit" class="secondary">Choose</button></form>'
+       . '<form method="post" class="card">' . csrf_field() . '<input type="hidden" name="scope" value="' . h($scope) . '">'
+       . '<p><strong>' . $count . '</strong> player(s) on this list.</p>'
+       . '<label>Subject<input name="subject" maxlength="150" value="' . h($draft[0]) . '" required></label>'
+       . '<label>Message (plain text; we add "Hello [first name]" at the start and the unsubscribe link at the end)<textarea name="body" rows="10" maxlength="5000" required>' . h($draft[1]) . '</textarea></label>'
+       . '<button type="submit" name="action" value="test" class="secondary">Send a test to me</button> '
+       . '<label class="check"><input type="checkbox" name="confirm" value="1"> I have checked the test and want to send this to ' . $count . ' player(s)</label>'
+       . '<button type="submit" name="action" value="send"' . ($count ? '' : ' disabled') . '>Send</button></form>';
+    $camps = q('SELECT * FROM marketing_campaigns WHERE scope = ? ORDER BY id DESC LIMIT 10', [$scope])->fetchAll();
+    if ($camps) {
+        $b .= '<h2>Recent messages</h2>';
+        foreach ($camps as $cp) {
+            $pr = campaign_progress((int) $cp['id']);
+            $b .= '<div class="card"><strong>' . h($cp['subject']) . '</strong> · ' . h(from_utc($cp['created_at'])->format('j M Y H:i')) . '<br>Sent ' . $pr['sent'] . ' · waiting ' . $pr['queued'] . ' · skipped (unsubscribed since) ' . $pr['skipped']
+                . ($pr['queued'] > 0 ? '<form method="post" class="inlineform">' . csrf_field() . '<input type="hidden" name="scope" value="' . h($scope) . '"><input type="hidden" name="campaign_id" value="' . (int) $cp['id'] . '"><button type="submit" name="action" value="batch">Send next batch</button></form>' : '') . '</div>';
+        }
+    }
+    page('Send a message', $b);
+}
 if ($path === '/privacy') {
     page('Privacy notice (draft)', '<h1>Privacy notice</h1><p class="notice"><strong>DRAFT.</strong> This wording is a working draft and has not yet been reviewed by a solicitor. It will change before launch.</p>'
         . '<h2>Who we are</h2><p>PlayMoreCricket lets you hire cricket nets and book coaches at clubs. We run the website and take bookings; the club provides the nets and coaching.</p>'
@@ -1093,7 +1153,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         $b .= '<h2 id="players">Players who agreed to hear from ' . h($club['name']) . '</h2><p class="muted">Only people who ticked the box for this club when booking, and have not unsubscribed. Use this list only for offers and events from the club, and include an unsubscribe option in every message.</p>';
         if (!$pl) { $b .= '<p>No one yet.</p>'; }
         else {
-            $b .= '<p>' . count($pl) . ' player(s). <a href="/players/' . h($club['slug']) . '.csv">Download as a spreadsheet (CSV)</a></p><table><tr><th>Name</th><th>Email</th><th>Agreed on</th><th>Bookings</th></tr>';
+            $b .= '<p>' . count($pl) . ' player(s). <a href="/players/' . h($club['slug']) . '.csv">Download as a spreadsheet (CSV)</a> · <a href="/messages?scope=club-' . (int) $club['id'] . '">Send them a message</a></p><table><tr><th>Name</th><th>Email</th><th>Agreed on</th><th>Bookings</th></tr>';
             foreach (array_slice($pl, 0, 50) as $r) { $b .= '<tr><td>' . h($r['name']) . '</td><td>' . h($r['email']) . '</td><td>' . h(from_utc($r['consented_at'])->format('j M Y')) . '</td><td>' . (int) $r['bookings'] . '</td></tr>'; }
             $b .= '</table>' . (count($pl) > 50 ? '<p class="muted">First 50 shown; the download has everyone.</p>' : '');
         }

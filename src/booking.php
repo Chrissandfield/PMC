@@ -25,13 +25,13 @@ function booking_link(string $reference): string
 function now_utc(): string { return utc_string(new DateTimeImmutable('now', london())); }
 
 /** Send (or at least record) an email. Failures are logged on the outbox row and never break a booking. */
-function send_email(string $to, string $subject, string $body, ?int $bookingId = null): void
+function send_email(string $to, string $subject, string $body, ?int $bookingId = null, string $extraHeaders = ''): void
 {
     q('INSERT INTO email_outbox (to_email, subject, body, booking_id) VALUES (?,?,?,?)', [$to, $subject, $body, $bookingId]);
     $id = (int) q('SELECT MAX(id) AS i FROM email_outbox WHERE to_email = ?', [$to])->fetch()['i'];
     $err = null;
     if (getenv('PMC_MAIL_FAKE') !== '1') {
-        $headers = "From: PlayMoreCricket <hello@playmorecricket.com>\r\nReply-To: hello@playmorecricket.com\r\nContent-Type: text/plain; charset=UTF-8";
+        $headers = "From: PlayMoreCricket <hello@playmorecricket.com>\r\nReply-To: hello@playmorecricket.com\r\nContent-Type: text/plain; charset=UTF-8" . ($extraHeaders !== '' ? "\r\n" . $extraHeaders : '');
         $ok = @mail($to, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, $headers);
         if (!$ok) { $err = 'mail() returned false'; }
     }
