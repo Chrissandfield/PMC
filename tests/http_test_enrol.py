@@ -14,17 +14,27 @@ def ok(c,m):
 def csrf(h): return re.search(r'name="csrf" value="([0-9a-f]+)"',h).group(1)
 v=client()
 s,h,_=req(v,'/enrol'); ok(s==200 and 'Enrol your club' in h,'form loads')
-form={'csrf':csrf(h),'club':'Test Vale CC','town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cdetail':'kay@test.local',
+form={'csrf':csrf(h),'club':'Test Vale CC','town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cemail':'kay@test.local','cphone':'01892 555123',
  'sname':'Sam Safe','semail':'sam@test.local','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1',
  'g_type[]':['outdoor','outdoor','outdoor','indoor','outdoor','outdoor'],'g_member[]':['0','0','0','0','',''],'g_non[]':['10','10','10','15','',''],
- 'c_name[]':['Sam Safe','Pat Coach','','','',''],'c_price[]':['30','25','','','',''],'c_qual[]':['ECB Core Coach (Level 3)','ECB Foundation Coach (Level 2)','','','',''],'c_other[]':['']*6}
-for d in range(7): form[f'open[{d}]']='9'; form[f'close[{d}]']='19'
+ 'c_name[]':['Sam Safe','Pat Coach','','','',''],'c_price[]':['30','25','','','',''],'c_qual[]':['ECB Core Coach (Level 3)','ECB Foundation Coach (Level 2)','','','',''],'c_other[]':['']*6,'c_email[]':['sam@coach.test','pat@coach.test','','','','']}
+for d in range(7): form[f'open[outdoor][{d}]']='9'; form[f'close[outdoor][{d}]']='19'; form[f'open[indoor][{d}]']='10'; form[f'close[indoor][{d}]']='18'
 bad=dict(form); bad['plink']=''
 s,h,_=req(v,'/enrol',bad); ok(s==200 and 'attach the file or give the web link' in h,'no policy refused')
+b2=dict(form); b2['cphone']='12'
+s,h,_=req(v,'/enrol',b2); ok(s==200 and 'phone number' in h,'key contact phone required')
+b2=dict(form); b2['cemail']='not-an-email'
+s,h,_=req(v,'/enrol',b2); ok(s==200 and 'email address' in h,'key contact email required')
+b2=dict(form); b2['c_email[]']=['','pat@coach.test','','','','']
+s,h,_=req(v,'/enrol',b2); ok(s==200 and 'email address is needed for each coach' in h,'coach email required')
 s,h,_=req(v,'/enrol',form); ok(s==200 and 'Thank you' in h,'application accepted: '+h[:0])
 ok(psql("select status from clubs where slug='test-vale-cc'")=='pending','club saved pending')
 ok(psql("select count(*) from nets n join clubs c on c.id=n.club_id where c.slug='test-vale-cc'")=='4','4 nets created')
 ok(psql("select count(*) from nets n join clubs c on c.id=n.club_id where c.slug='test-vale-cc' and kind='indoor'")=='1','1 indoor')
+ok(psql("select o.open_hour||'-'||o.close_hour from opening_hours o join nets n on n.id=o.net_id join clubs c on c.id=n.club_id where c.slug='test-vale-cc' and n.kind='indoor' and o.weekday=2 limit 1")=='10-18','indoor hours saved separately')
+ok(psql("select o.open_hour||'-'||o.close_hour from opening_hours o join nets n on n.id=o.net_id join clubs c on c.id=n.club_id where c.slug='test-vale-cc' and n.kind='outdoor' and o.weekday=2 limit 1")=='9-19','outdoor hours saved separately')
+ok(psql("select email from coaches where name='Pat Coach'")=='pat@coach.test','coach email saved')
+ok(psql("select phone||'|'||email from clubs where slug='test-vale-cc'")=='01892 555123|kay@test.local','club phone and email saved from key contact')
 ok(psql("select count(*) from verification_tokens")=='2','two tokens (officer + second, as officer is a coach)')
 ok(psql("select count(*) from email_outbox where to_email='sam@test.local'")=='1','officer emailed')
 s,h,_=req(client(),'/club/test-vale-cc'); ok(s==404,'pending club hidden from public')

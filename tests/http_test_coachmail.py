@@ -13,4 +13,9 @@ ok(psql("select count(*) from email_outbox where to_email='trevor@test.local' an
 b=psql("select body from email_outbox where to_email='trevor@test.local'")
 ok('UNDER-18' in b and 'Sam' in b and 'pat@x.com' not in b and '0712' not in b,'coach email has junior notice, no customer contact details')
 ok(psql("select count(*) from email_outbox")=='3','customer, club and coach emailed')
+# coach with no login but an email from the application form
+psql("update coaches set email='jake.coach@test.local' where name='Jake Cheeseman'")
+php2=php.replace("WHERE name='Trevor Bayley'","WHERE name='Jake Cheeseman'").replace("PMC-CMAIL1","PMC-CMAIL2").replace("2030-01-07 10:00","2030-01-08 10:00").replace("2030-01-07 11:00","2030-01-08 11:00")
+subprocess.run(['php','-r',php2],capture_output=True,text=True)
+ok(psql("select count(*) from email_outbox where to_email='jake.coach@test.local' and subject like 'You have been booked%'")=='1','coach with no login is emailed at the address from the application')
 print('FAILS',fails)

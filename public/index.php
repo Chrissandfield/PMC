@@ -273,7 +273,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         foreach ($pend as $c) {
             $co = q('SELECT name, dbs_checked, dbs_method, dbs_confirmed_by, dbs_checked_on FROM coaches WHERE club_id = ? ORDER BY id', [$c['id']])->fetchAll();
             $b .= '<div class="card"><strong>' . h($c['name']) . '</strong> <span class="muted">' . h($c['town']) . ' · applied ' . h(from_utc($c['submitted_at'])->format('j M Y')) . '</span>'
-                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . (q("SELECT 1 FROM club_documents WHERE club_id = ? AND kind = 'safeguarding'", [$c['id']])->fetch() ? ' &middot; <a href="/admin/policy?club=' . (int) $c['id'] . '">Download the file</a>' : '') . '</p>'
+                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . ' · ' . h((string) $c['phone']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . (q("SELECT 1 FROM club_documents WHERE club_id = ? AND kind = 'safeguarding'", [$c['id']])->fetch() ? ' &middot; <a href="/admin/policy?club=' . (int) $c['id'] . '">Download the file</a>' : '') . '</p>'
                 . '<p>' . (!empty($c['safeguarding_confirmed_at']) ? '&#10003; Policy confirmed by ' . h((string) $c['safeguarding_confirmed_by']) . ' on ' . h(from_utc($c['safeguarding_confirmed_at'])->format('j M Y')) : 'Safeguarding policy: <strong>not yet confirmed</strong>') . '</p><ul>';
             foreach ($co as $x) {
                 $b .= '<li>' . h($x['name']) . ': ' . ($x['dbs_checked'] ? '&#10003; ' . h(method_label($x['dbs_method'])) . ' on ' . h(date('j M Y', strtotime((string) $x['dbs_checked_on']))) . ' (confirmed by ' . h((string) $x['dbs_confirmed_by']) . ')' : '<strong>not yet confirmed</strong>') . '</li>';
@@ -499,7 +499,7 @@ if ($path === '/enrol') {
         csrf_check();
         $in = $_POST;
         foreach (($in['g_type'] ?? []) as $i => $x) { $in['g_type_' . $i] = $x; $in['g_member_' . $i] = $in['g_member'][$i] ?? ''; $in['g_non_' . $i] = $in['g_non'][$i] ?? ''; }
-        foreach (($in['c_name'] ?? []) as $i => $x) { $in['c_name_' . $i] = $x; $in['c_price_' . $i] = $in['c_price'][$i] ?? ''; $in['c_qual_' . $i] = $in['c_qual'][$i] ?? ''; $in['c_other_' . $i] = $in['c_other'][$i] ?? ''; }
+        foreach (($in['c_name'] ?? []) as $i => $x) { $in['c_name_' . $i] = $x; $in['c_price_' . $i] = $in['c_price'][$i] ?? ''; $in['c_qual_' . $i] = $in['c_qual'][$i] ?? ''; $in['c_other_' . $i] = $in['c_other'][$i] ?? ''; $in['c_email_' . $i] = $in['c_email'][$i] ?? ''; }
         [$ok, $msg] = enrol_create($_POST);
         if ($ok) { page('Application received', '<h1>Thank you</h1><p class="lead">We have emailed your safeguarding officer a private link to confirm the club\'s safeguarding details. When that is done we will review the application and let you know.</p><p><a href="/">Back to the home page</a></p>'); }
         flash($msg, true);

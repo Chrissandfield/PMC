@@ -124,13 +124,14 @@ function enrol_create(array $in): array
     if (trim((string) ($in['website'] ?? '')) !== '') { return [false, 'Something went wrong. Please try again.', null]; }   // honeypot
     $club = trim((string) ($in['club'] ?? '')); $town = trim((string) ($in['town'] ?? '')); $county = trim((string) ($in['county'] ?? 'Kent')) ?: 'Kent';
     $postcode = strtoupper(trim((string) ($in['postcode'] ?? '')));
-    $cname = trim((string) ($in['cname'] ?? '')); $cdetail = trim((string) ($in['cdetail'] ?? ''));
+    $cname = trim((string) ($in['cname'] ?? '')); $cdetail = trim((string) ($in['cemail'] ?? '')); $cphone = trim((string) ($in['cphone'] ?? ''));
     $sname = trim((string) ($in['sname'] ?? '')); $semail = trim((string) ($in['semail'] ?? ''));
     $plink = trim((string) ($in['plink'] ?? ''));
     if ($club === '' || mb_strlen($club) > 160) { $err[] = 'Add your club name.'; }
     if ($town === '') { $err[] = 'Add your town or village.'; }
     if ($cname === '') { $err[] = "Add the key contact's name."; }
-    if ($cdetail === '') { $err[] = "Add the key contact's email or phone number."; }
+    if (!filter_var($cdetail, FILTER_VALIDATE_EMAIL)) { $err[] = "Add the key contact's email address."; }
+    if (strlen(preg_replace('/\D/', '', $cphone)) < 7 || strlen($cphone) > 40) { $err[] = "Add the key contact's phone number."; }
     if ($sname === '') { $err[] = "Add the safeguarding officer's name."; }
     if (!filter_var($semail, FILTER_VALIDATE_EMAIL)) { $err[] = "Add the safeguarding officer's email address. We send their confirmation link there."; }
     // The club gives its written safeguarding policy as a file OR a web link (or both).
@@ -157,11 +158,15 @@ function enrol_create(array $in): array
     if ($crestErr) { $err[] = $crestErr; }
     if ($crestB64 !== null && empty($in['crest_ok'])) { $err[] = 'Please tick the box confirming the club may use the crest and gives us permission to display it.'; }
 
+    // Opening hours are given separately for outdoor and indoor nets; a type only needs hours if the club has nets of that type.
     $hours = [];
-    for ($d = 0; $d < 7; $d++) {
-        $closed = !empty($in['closed'][$d]); $o = (int) ($in['open'][$d] ?? 8); $c = (int) ($in['close'][$d] ?? 20);
-        if (!$closed && ($o < 0 || $o > 23 || $c < 1 || $c > 24 || $c <= $o)) { $err[] = 'Check the opening times on day ' . ($d + 1) . ': closing must be after opening.'; break; }
-        $hours[$d] = [$closed ? 1 : 0, $closed ? 8 : $o, $closed ? 20 : $c];
+    foreach (['outdoor', 'indoor'] as $ht) {
+        if (!array_filter($groups, fn($g) => $g['type'] === $ht)) { continue; }
+        for ($d = 0; $d < 7; $d++) {
+            $closed = !empty($in['closed'][$ht][$d]); $o = (int) ($in['open'][$ht][$d] ?? 8); $c = (int) ($in['close'][$ht][$d] ?? 20);
+            if (!$closed && ($o < 0 || $o > 23 || $c < 1 || $c > 24 || $c <= $o)) { $err[] = 'Check the ' . $ht . ' opening times on day ' . ($d + 1) . ': closing must be after opening.'; break; }
+            $hours[$ht][$d] = [$closed ? 1 : 0, $closed ? 8 : $o, $closed ? 20 : $c];
+        }
     }
 
     // Coaches: up to 6 lines. Blank lines are ignored.
@@ -170,18 +175,20 @@ function enrol_create(array $in): array
     foreach (($in['c_name'] ?? []) as $i => $name) {
         $name = trim((string) $name); $price = trim((string) ($in['c_price'][$i] ?? '')); $q = (string) ($in['c_qual'][$i] ?? '');
         if ($name === '' && $price === '') { continue; }
+        $cemail = trim((string) ($in['c_email'][$i] ?? ''));
         $qual = $q === 'Other' ? trim((string) ($in['c_other'][$i] ?? '')) : $q;
         $pp = pence_from($price);
         if ($name === '' || $pp === null || $pp <= 0 || $qual === '' || !in_array($q, QUALIFICATIONS, true)) { $err[] = 'Check coach line ' . ($i + 1) . ': a name, an hourly price and a qualification.'; continue; }
-        $coaches[] = ['name' => $name, 'price' => $pp, 'qual' => mb_substr($qual, 0, 160), 'officer' => ($officerCoach === $i + 1)];
+        if (!filter_var($cemail, FILTER_VALIDATE_EMAIL)) { $err[] = 'Check coach line ' . ($i + 1) . ': an email address is needed for each coach.'; continue; }
+        $coaches[] = ['email' => $cemail, 'name' => $name, 'price' => $pp, 'qual' => mb_substr($qual, 0, 160), 'officer' => ($officerCoach === $i + 1)];
     }
     if ($err) { return [false, implode(' ', array_unique($err)), null]; }
 
-    $isEmail = filter_var($cdetail, FILTER_VALIDATE_EMAIL) !== false;
+    $isEmail = true;
     $slug = unique_slug($club);
     q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at)
        VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)",
-      [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $isEmail ? null : $cdetail, $isEmail ? $cdetail : null,
+      [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $cphone, $cdetail,
        $cname, $cdetail, $sname, $semail, implode(' | ', array_filter([$docB64 !== null ? 'Uploaded file: ' . $docName : '', $plink])), now_utc()]);
     $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
 
@@ -198,14 +205,14 @@ function enrol_create(array $in): array
                 q('INSERT INTO nets (club_id, name, kind, member_price_pence, nonmember_price_pence, machine_price_pence, machine_coach_only) VALUES (?,?,?,?,?,?,?)',
                   [$clubId, ucfirst($type) . ' net ' . $n, $type, $g['member'], $g['non'], $withMachine ? $mprice : null, $mcoach ? 1 : 0]);
                 $netId = (int) q('SELECT MAX(id) AS i FROM nets WHERE club_id = ?', [$clubId])->fetch()['i'];
-                foreach ($hours as $d => $hh) { q('INSERT INTO opening_hours (net_id, weekday, is_closed, open_hour, close_hour) VALUES (?,?,?,?,?)', [$netId, $d, $hh[0], $hh[1], $hh[2]]); }
+                foreach ($hours[$type] as $d => $hh) { q('INSERT INTO opening_hours (net_id, weekday, is_closed, open_hour, close_hour) VALUES (?,?,?,?,?)', [$netId, $d, $hh[0], $hh[1], $hh[2]]); }
             }
         }
     }
     $coachIds = []; $officerCoachId = null;
     foreach ($coaches as $c) {
-        q('INSERT INTO coaches (club_id, name, hourly_price_pence, qualification, dbs_checked, is_safeguarding_officer) VALUES (?,?,?,?,?,?)',
-          [$clubId, $c['name'], $c['price'], $c['qual'], 0, $c['officer'] ? 1 : 0]);
+        q('INSERT INTO coaches (club_id, name, hourly_price_pence, qualification, dbs_checked, is_safeguarding_officer, email) VALUES (?,?,?,?,?,?,?)',
+          [$clubId, $c['name'], $c['price'], $c['qual'], 0, $c['officer'] ? 1 : 0, $c['email']]);
         $id = (int) q('SELECT MAX(id) AS i FROM coaches WHERE club_id = ?', [$clubId])->fetch()['i'];
         $coachIds[$id] = $c['name']; if ($c['officer']) { $officerCoachId = $id; }
     }
@@ -275,7 +282,8 @@ function enrol_form_html(array $old = []): string
        . '<label>Club crest or logo (optional)<input type="file" name="crest" accept="image/png,image/jpeg,image/webp"><span class="muted">PNG, JPG or WebP, under 1 MB. It appears on your club page once you go live.</span></label>'
        . '<label class="check"><input type="checkbox" name="crest_ok" value="1"> I confirm the club owns this crest or logo, or has the right to use it, and gives PlayMoreCricket permission to display it on the club\'s page and in the club list for as long as the club is listed.</label>'
        . '<label>Key contact name<input name="cname" maxlength="160" value="' . $v('cname') . '" required></label>'
-       . '<label>Key contact email (or phone)<input name="cdetail" maxlength="190" value="' . $v('cdetail') . '" required></label></fieldset>';
+       . '<label>Key contact email<input type="email" name="cemail" maxlength="190" value="' . $v('cemail') . '" required></label>'
+       . '<label>Key contact phone<input type="tel" name="cphone" maxlength="40" inputmode="tel" value="' . $v('cphone') . '" required></label></fieldset>';
     $b .= '<fieldset class="card"><legend>Net hire</legend><p class="muted">List each net on its own line. Visitors choose indoor or outdoor and we give them a free net of that type. Leave unused lines empty.</p>';
     $b .= '<div class="netgrid nethead" aria-hidden="true"><span></span><span>Type</span><span>Members, &pound;/hour</span><span>Non-members, &pound;/hour</span></div>';
     for ($i = 0; $i < 6; $i++) {
@@ -287,19 +295,22 @@ function enrol_form_html(array $old = []): string
     $b .= '<label class="check"><input type="checkbox" name="machine" value="1"' . (!empty($old['machine']) ? ' checked' : '') . '> We have a bowling machine</label>'
         . '<div class="row"><label>Machine price, &pound; per hour<input name="mprice" inputmode="decimal" size="5" value="' . $v('mprice') . '"></label>'
         . '<label class="check"><input type="checkbox" name="mcoach" value="1" checked> Coaches only</label></div></fieldset>';
-    $b .= '<fieldset class="card"><legend>Opening times</legend><p class="muted">These repeat every week and apply to all nets.</p>';
-    foreach (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as $d => $name) {
-        $b .= '<div class="dayrow"><strong>' . $name . '</strong><label class="check"><input type="checkbox" name="closed[' . $d . ']" value="1"> Closed</label>'
-            . '<select name="open[' . $d . ']" aria-label="' . $name . ' opens">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 8 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(5, 22))) . '</select>'
-            . '<select name="close[' . $d . ']" aria-label="' . $name . ' closes">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 20 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(6, 24))) . '</select></div>';
+    foreach (['outdoor' => 'Outdoor nets: opening times', 'indoor' => 'Indoor nets: opening times'] as $ht => $legend) {
+        $b .= '<fieldset class="card"><legend>' . $legend . '</legend><p class="muted">These repeat every week and apply to all your ' . $ht . ' nets.' . ($ht === 'indoor' ? ' Ignored if you have no indoor nets.' : ' Ignored if you have no outdoor nets.') . '</p>';
+        foreach (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as $d => $name) {
+            $b .= '<div class="dayrow"><strong>' . $name . '</strong><label class="check"><input type="checkbox" name="closed[' . $ht . '][' . $d . ']" value="1"> Closed</label>'
+                . '<select name="open[' . $ht . '][' . $d . ']" aria-label="' . $ht . ' ' . $name . ' opens">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 8 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(5, 22))) . '</select>'
+                . '<select name="close[' . $ht . '][' . $d . ']" aria-label="' . $ht . ' ' . $name . ' closes">' . implode('', array_map(fn($x) => '<option value="' . $x . '"' . ($x === 20 ? ' selected' : '') . '>' . sprintf('%02d:00', $x) . '</option>', range(6, 24))) . '</select></div>';
+        }
+        $b .= '</fieldset>';
     }
-    $b .= '</fieldset>';
-    $b .= '<fieldset class="card"><legend>Coaches</legend><p class="muted">Leave unused lines empty. Do not send DBS certificate numbers: your safeguarding officer confirms each check on a private page.</p>';
+    $b .= '<fieldset class="card"><legend>Coaches</legend><p class="muted">Leave unused lines empty. Each coach needs an email address, so they get their booking emails. Do not send DBS certificate numbers: your safeguarding officer confirms each check on a private page.</p>';
     for ($i = 0; $i < 6; $i++) {
         $b .= '<div class="row"><label>Coach name<input name="c_name[]" maxlength="160" value="' . $v('c_name_' . $i) . '"></label>'
             . '<label>&pound; per hour<input name="c_price[]" inputmode="decimal" size="5" value="' . $v('c_price_' . $i) . '"></label>'
             . '<label>Qualification' . $sel('c_qual[]', QUALIFICATIONS, (string) ($old['c_qual_' . $i] ?? '')) . '</label>'
-            . '<label>If other, which<input name="c_other[]" maxlength="100" value="' . $v('c_other_' . $i) . '"></label></div>';
+            . '<label>If other, which<input name="c_other[]" maxlength="100" value="' . $v('c_other_' . $i) . '"></label>'
+            . '<label>Email<input type="email" name="c_email[]" maxlength="190" value="' . $v('c_email_' . $i) . '"></label></div>';
     }
     $b .= '</fieldset>';
     $b .= '<fieldset class="card"><legend>Safeguarding</legend><p class="muted">Every club must give us its safeguarding officer and written policy before it is listed, because juniors may be booked.</p>'

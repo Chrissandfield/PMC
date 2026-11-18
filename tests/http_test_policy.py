@@ -24,10 +24,10 @@ def multipart(fields,fname,fdata,fmime,pname=None,pdata=None,pmime=None):
     if pdata is not None: out+=f'--{b}\r\nContent-Disposition: form-data; name="policy_file"; filename="{pname}"\r\nContent-Type: {pmime}\r\n\r\n'.encode()+pdata+b'\r\n'
     return out+f'--{b}--\r\n'.encode(), f'multipart/form-data; boundary={b}'
 def form(club):
-    f={'crest_ok':'1','club':club,'town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cdetail':'kay@test.local','sname':'Sam Safe','semail':'sam@test.local',
+    f={'crest_ok':'1','club':club,'town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cemail':'kay@test.local','cphone':'01892 555123','sname':'Sam Safe','semail':'sam@test.local',
      'plink':'https://example.com/p','officer_coach':'0','cf1':'1','cf2':'1','cf3':'1','cf4':'1','g_type[]':['outdoor'],'g_member[]':['0'],'g_non[]':['10'],
-     'c_name[]':['Pat Coach'],'c_price[]':['25'],'c_qual[]':['ECB Core Coach (Level 3)'],'c_other[]':['']}
-    for d in range(7): f[f'open[{d}]']='9'; f[f'close[{d}]']='19'
+     'c_name[]':['Pat Coach'],'c_price[]':['25'],'c_qual[]':['ECB Core Coach (Level 3)'],'c_other[]':[''],'c_email[]':['pat@coach.test']}
+    for d in range(7): f[f'open[outdoor][{d}]']='9'; f[f'close[outdoor][{d}]']='19'; f[f'open[indoor][{d}]']='10'; f[f'close[indoor][{d}]']='18'
     return f
 def submit(club,fname,data,mime):
     c=client(); s,h,_=req(c,'/enrol'); f=form(club); f['csrf']=re.search(rb'name="csrf" value="([0-9a-f]+)"',h).group(1).decode()

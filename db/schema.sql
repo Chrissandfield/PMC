@@ -276,4 +276,6 @@ ALTER TABLE coaches ADD COLUMN feed_token VARCHAR(40) NULL;
 CREATE UNIQUE INDEX clubs_feed_token_uq   ON clubs (feed_token);
 CREATE UNIQUE INDEX coaches_feed_token_uq ON coaches (feed_token);
 
-INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests'), ('005_club_documents'), ('006_coach_pattern'), ('007_calendar_feeds');
+ALTER TABLE coaches ADD COLUMN email VARCHAR(190) NULL;
+
+INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests'), ('005_club_documents'), ('006_coach_pattern'), ('007_calendar_feeds'), ('008_coach_email');

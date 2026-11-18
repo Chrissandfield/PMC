@@ -131,8 +131,8 @@ function visitor_reserve(array $club, array $net, string $localStart, array $in)
 function coach_email(array $b): ?string
 {
     if (empty($b['coach_id'])) { return null; }
-    $e = q('SELECT u.email FROM coaches c JOIN users u ON u.id = c.user_id WHERE c.id = ?', [$b['coach_id']])->fetch();
-    return $e ? (string) $e['email'] : null;
+    $e = q('SELECT COALESCE(u.email, c.email) AS email FROM coaches c LEFT JOIN users u ON u.id = c.user_id WHERE c.id = ?', [$b['coach_id']])->fetch();
+    return !empty($e['email']) ? (string) $e['email'] : null;
 }
 
 function queue_confirmation_emails(array $b): void
