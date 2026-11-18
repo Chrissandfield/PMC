@@ -126,7 +126,8 @@ function enrol_create(array $in): array
     $postcode = strtoupper(trim((string) ($in['postcode'] ?? '')));
     $cname = trim((string) ($in['cname'] ?? '')); $cdetail = trim((string) ($in['cemail'] ?? '')); $cphone = trim((string) ($in['cphone'] ?? ''));
     $sname = trim((string) ($in['sname'] ?? '')); $semail = trim((string) ($in['semail'] ?? ''));
-    $plink = trim((string) ($in['plink'] ?? ''));
+    $plink = trim((string) ($in['plink'] ?? '')); $weblink = trim((string) ($in['weblink'] ?? ''));
+    if ($weblink !== '' && (!preg_match('#^https?://\S+$#i', $weblink) || strlen($weblink) > 250)) { $err[] = 'The club website or social media link must start with https://'; }
     if ($club === '' || mb_strlen($club) > 160) { $err[] = 'Add your club name.'; }
     if ($town === '') { $err[] = 'Add your town or village.'; }
     if ($cname === '') { $err[] = "Add the key contact's name."; }
@@ -186,10 +187,10 @@ function enrol_create(array $in): array
 
     $isEmail = true;
     $slug = unique_slug($club);
-    q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at)
-       VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?)",
+    q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at, web_link)
+       VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?)",
       [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $cphone, $cdetail,
-       $cname, $cdetail, $sname, $semail, implode(' | ', array_filter([$docB64 !== null ? 'Uploaded file: ' . $docName : '', $plink])), now_utc()]);
+       $cname, $cdetail, $sname, $semail, implode(' | ', array_filter([$docB64 !== null ? 'Uploaded file: ' . $docName : '', $plink])), now_utc(), $weblink === '' ? null : $weblink]);
     $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
 
     if ($crestB64 !== null) { q('INSERT INTO club_crests (club_id, mime, data_b64, permission_given_by) VALUES (?,?,?,?)', [$clubId, $crestMime, $crestB64, $cname]); }
@@ -298,6 +299,7 @@ function enrol_form_html(array $old = []): string
        . '<label>Town or village<input name="town" maxlength="120" value="' . $v('town') . '" required></label>'
        . '<label>County<input name="county" maxlength="80" value="' . $v('county', 'Kent') . '"></label>'
        . '<label>Postcode<input name="postcode" maxlength="12" value="' . $v('postcode') . '"></label>'
+       . '<label>Club website or Facebook or Instagram page (optional)<input name="weblink" maxlength="250" inputmode="url" placeholder="https://" value="' . $v('weblink') . '"><span class="muted">Helps us check the club before we list it.</span></label>'
        . '<label>Club crest or logo (optional)<input type="file" name="crest" accept="image/png,image/jpeg,image/webp"><span class="muted">PNG, JPG or WebP, under 1 MB. It appears on your club page once you go live.</span></label>'
        . '<label class="check"><input type="checkbox" name="crest_ok" value="1"> I confirm the club owns this crest or logo, or has the right to use it, and gives PlayMoreCricket permission to display it on the club\'s page and in the club list for as long as the club is listed.</label>'
        . '<label>Key contact name<input name="cname" maxlength="160" value="' . $v('cname') . '" required></label>'

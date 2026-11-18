@@ -76,7 +76,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -125,14 +125,17 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
     if ($path === '/admin/applications/approve' && $method === 'POST') {
         csrf_check();
         $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
-        if (!$club || $club['status'] !== 'pending') { flash('That application is not waiting for approval.', true); redirect('/admin'); }
+        if (!$club || $club['status'] !== 'pending' || !empty($club['declined_at'])) { flash('That application is not waiting for approval.', true); redirect('/admin'); }
         if (empty($club['safeguarding_confirmed_at'])) { flash('Not approved: the safeguarding officer has not yet confirmed the club\'s safeguarding policy.', true); redirect('/admin'); }
         $un = (int) q('SELECT COUNT(*) AS n FROM coaches WHERE club_id = ? AND NOT dbs_checked', [$club['id']])->fetch()['n'];
         if ($un > 0 && empty($_POST['allow_unconfirmed'])) { flash($un . ' coach(es) have no confirmed DBS check. Tick the box to approve anyway (they will show with no DBS tick), or wait.', true); redirect('/admin'); }
         q('UPDATE clubs SET status = ?, approved_at = ?, approved_by_user_id = ? WHERE id = ?', ['active', now_utc(), $user['id'], $club['id']]);
         audit((int) $user['id'], 'club_approved', $club['slug']);
         if (filter_var((string) $club['key_contact_detail'], FILTER_VALIDATE_EMAIL)) {
-            send_email((string) $club['key_contact_detail'], $club['name'] . ' is now live on PlayMoreCricket', "Hello " . $club['key_contact_name'] . ",\n\nYour club is now live: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug'] . "\n\nPlayMoreCricket");
+            send_email((string) $club['key_contact_detail'], $club['name'] . ' is now live on PlayMoreCricket', "Hello " . $club['key_contact_name'] . ",\n\nYour club is now live: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug']
+                . "\n\nWhat happens next:\n1. Online payments: so customers can book and pay online, your club connects its own Stripe account. Log in, open your club page and press Set up payments. Until then your page shows your diary but visitors cannot pay online.\n"
+                . "2. Logins: we will send you and each of your coaches login details separately. Coaches use theirs to set the hours they are available.\n"
+                . "3. Check your club page and tell us if anything is wrong: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug'] . "\n\nQuestions? Reply to hello@playmorecricket.com.\n\nPlayMoreCricket");
         }
         flash($club['name'] . ' is now live.'); redirect('/admin');
     }
@@ -160,6 +163,25 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         }
         audit((int) $user['id'], 'verification_link_shown', $club['slug'] . ' ' . ($_POST['who'] ?? 'officer'));
         flash('Private link for ' . $who . ', valid ' . TOKEN_DAYS . ' days. Send it only to them: ' . verify_link($raw));
+        redirect('/admin');
+    }
+    if ($path === '/admin/applications/decline' && $method === 'POST') {
+        csrf_check();
+        $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+        if (!$club || $club['status'] !== 'pending' || !empty($club['declined_at'])) { flash('That application is not waiting for a decision.', true); redirect('/admin'); }
+        $reason = trim((string) ($_POST['reason'] ?? '')); $act = (string) ($_POST['action'] ?? '');
+        if ($reason === '' || mb_strlen($reason) > 500) { flash('Write a short reason (up to 500 characters). It is emailed to the key contact.', true); redirect('/admin'); }
+        $to = (string) $club['key_contact_detail'];
+        if ($act === 'decline') {
+            q('UPDATE clubs SET declined_at = ?, decline_reason = ? WHERE id = ?', [now_utc(), $reason, $club['id']]);
+            send_email($to, 'Your application to PlayMoreCricket: ' . $club['name'], "Hello {$club['key_contact_name']},\n\nThank you for applying to list {$club['name']} on PlayMoreCricket. We are not able to list the club at the moment.\n\nReason: $reason\n\nIf you think this is a mistake, or things change, please reply to hello@playmorecricket.com.\n\nPlayMoreCricket");
+            audit((int) $user['id'], 'club_declined', $club['slug'] . ': ' . $reason);
+            flash($club['name'] . ' was declined and the key contact has been emailed.');
+        } else {
+            send_email($to, 'Your application to PlayMoreCricket needs a change: ' . $club['name'], "Hello {$club['key_contact_name']},\n\nThank you for applying to list {$club['name']} on PlayMoreCricket. Before we can list the club we need the following:\n\n$reason\n\nPlease reply to hello@playmorecricket.com and we will update your application.\n\nPlayMoreCricket");
+            audit((int) $user['id'], 'club_changes_requested', $club['slug'] . ': ' . $reason);
+            flash('Changes requested. The key contact has been emailed and the application stays in the waiting list.');
+        }
         redirect('/admin');
     }
     if ($path === '/admin/applications/confirm' && $method === 'POST') {
@@ -267,13 +289,30 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
         . '<button type="submit">Create login</button></form><h2>Clubs and commission</h2>';
     send_due_reminders();
-    $pend = q("SELECT * FROM clubs WHERE status = 'pending' AND submitted_at IS NOT NULL ORDER BY submitted_at")->fetchAll();
+    $pend = q("SELECT * FROM clubs WHERE status = 'pending' AND submitted_at IS NOT NULL AND declined_at IS NULL ORDER BY submitted_at")->fetchAll();
     if ($pend) {
         $b .= '<h2>Club applications waiting</h2>';
         foreach ($pend as $c) {
             $co = q('SELECT name, dbs_checked, dbs_method, dbs_confirmed_by, dbs_checked_on, dbs_enhanced FROM coaches WHERE club_id = ? ORDER BY id', [$c['id']])->fetchAll();
+            $summary = '';
+            foreach (q('SELECT id, name, kind, member_price_pence, nonmember_price_pence, machine_price_pence FROM nets WHERE club_id = ? ORDER BY kind, id', [$c['id']])->fetchAll() as $nn) {
+                $summary .= '<li>' . h($nn['name']) . ': members ' . money((int) $nn['member_price_pence']) . ', non-members ' . money((int) $nn['nonmember_price_pence']) . '/hr' . ($nn['machine_price_pence'] !== null ? ', machine +' . money((int) $nn['machine_price_pence']) : '') . '</li>';
+            }
+            $hoursTxt = ''; $dn7 = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+            foreach (['outdoor', 'indoor'] as $hk) {
+                $fn = q('SELECT id FROM nets WHERE club_id = ? AND kind = ? ORDER BY id LIMIT 1', [$c['id'], $hk])->fetch();
+                if (!$fn) { continue; }
+                $parts = [];
+                foreach (q('SELECT weekday, is_closed, open_hour, close_hour FROM opening_hours WHERE net_id = ? ORDER BY weekday', [$fn['id']])->fetchAll() as $hr) {
+                    $parts[] = $dn7[(int) $hr['weekday']] . ' ' . ($hr['is_closed'] ? 'closed' : sprintf('%02d-%02d', $hr['open_hour'], $hr['close_hour']));
+                }
+                $hoursTxt .= '<li>' . ucfirst($hk) . ' hours: ' . h(implode(', ', $parts)) . '</li>';
+            }
+            $crestRow = q('SELECT permission_given_by, uploaded_at FROM club_crests WHERE club_id = ?', [$c['id']])->fetch();
             $b .= '<div class="card"><strong>' . h($c['name']) . '</strong> <span class="muted">' . h($c['town']) . ' · applied ' . h(from_utc($c['submitted_at'])->format('j M Y')) . '</span>'
-                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . ' · ' . h((string) $c['phone']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . (q("SELECT 1 FROM club_documents WHERE club_id = ? AND kind = 'safeguarding'", [$c['id']])->fetch() ? ' &middot; <a href="/admin/policy?club=' . (int) $c['id'] . '">Download the file</a>' : '') . '</p>'
+                . '<p>Key contact: ' . h((string) $c['key_contact_name']) . ', ' . h((string) $c['key_contact_detail']) . ' · ' . h((string) $c['phone']) . '<br>Safeguarding officer: ' . h((string) $c['safeguarding_name']) . ', ' . h((string) $c['safeguarding_contact']) . '<br>Website or social page: ' . (!empty($c['web_link']) ? '<a href="' . h((string) $c['web_link']) . '" target="_blank" rel="noopener noreferrer">' . h((string) $c['web_link']) . '</a> (check this is the real club)' : '<strong>none given</strong>') . '<br>Policy: ' . h((string) $c['safeguarding_policy']) . (q("SELECT 1 FROM club_documents WHERE club_id = ? AND kind = 'safeguarding'", [$c['id']])->fetch() ? ' &middot; <a href="/admin/policy?club=' . (int) $c['id'] . '">Download the file</a>' : '') . '</p>'
+                . '<p><strong>What will be published</strong> (<a href="/club/' . h($c['slug']) . '" target="_blank">preview the club page</a>)</p><ul>' . $summary . $hoursTxt . '</ul>'
+                . ($crestRow ? '<p><img src="/crest/' . h($c['slug']) . '" alt="Crest" width="48" height="48"> Crest uploaded; permission to display given by ' . h((string) $crestRow['permission_given_by']) . ' on ' . h(from_utc($crestRow['uploaded_at'])->format('j M Y')) . '.</p>' : '<p>No crest uploaded.</p>')
                 . '<p>' . (!empty($c['safeguarding_confirmed_at']) ? '&#10003; Policy confirmed by ' . h((string) $c['safeguarding_confirmed_by']) . ' on ' . h(from_utc($c['safeguarding_confirmed_at'])->format('j M Y')) : 'Safeguarding policy: <strong>not yet confirmed</strong>') . '</p><ul>';
             foreach ($co as $x) {
                 $b .= '<li>' . h($x['name']) . ': ' . ($x['dbs_checked'] ? '&#10003; ' . h(method_label($x['dbs_method'])) . ' on ' . h(date('j M Y', strtotime((string) $x['dbs_checked_on']))) . ' (confirmed by ' . h((string) $x['dbs_confirmed_by']) . ')' . dbs_flags_html($x) : '<strong>not yet confirmed</strong>') . '</li>';
@@ -281,6 +320,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             $b .= '</ul><form method="post" action="/admin/applications/approve" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
                 . '<label class="check"><input type="checkbox" name="allow_unconfirmed" value="1"> Approve even if some coaches are unconfirmed</label><button type="submit">Approve and publish</button></form>'
                 . '<form method="post" action="/admin/applications/resend" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><button type="submit">Send the officer a new link</button></form>'
+                . '<form method="post" action="/admin/applications/decline" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><label>Reason or what we need (emailed to the key contact)<input name="reason" maxlength="500"></label><button type="submit" name="action" value="changes" class="secondary">Ask for changes</button><button type="submit" name="action" value="decline" class="secondary">Decline</button></form>'
                 . '<form method="post" action="/admin/applications/link" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><button type="submit" name="who" value="officer" class="secondary">Show me the officer link to send myself</button>'
                 . (q('SELECT 1 FROM coaches WHERE club_id = ? AND is_safeguarding_officer', [$c['id']])->fetch() ? '<button type="submit" name="who" value="second" class="secondary">Show me the key contact link</button>' : '') . '</form>'
                 . '<form method="post" action="/admin/applications/confirm" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><label>Confirmed by hand, note<input name="note" maxlength="120" placeholder="who, how, when"></label><button type="submit">Record</button></form></div>';
@@ -488,9 +528,9 @@ if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})(/cancel)?$#', $path, $bm)) {
 }
 
 if (preg_match('#^/crest/([a-z0-9-]+)$#', $path, $m)) {
-    $row = q("SELECT k.mime, k.data_b64 FROM club_crests k JOIN clubs c ON c.id = k.club_id WHERE c.slug = ? AND (c.status = 'active' OR c.sponsored_partner)", [$m[1]])->fetch();
+    $row = q("SELECT k.mime, k.data_b64 FROM club_crests k JOIN clubs c ON c.id = k.club_id WHERE c.slug = ? AND (c.status = 'active' OR c.sponsored_partner" . (($user && $user['role'] === 'admin') ? ' OR 1=1' : '') . ')', [$m[1]])->fetch();
     if (!$row || !isset(CREST_TYPES[$row['mime']])) { http_response_code(404); exit; }
-    header('Content-Type: ' . $row['mime']); header('X-Content-Type-Options: nosniff'); header('Cache-Control: public, max-age=86400');
+    header('Content-Type: ' . $row['mime']); header('X-Content-Type-Options: nosniff'); header('Cache-Control: ' . ($user ? 'private, no-store' : 'public, max-age=86400'));
     echo base64_decode($row['data_b64']); exit;
 }
 

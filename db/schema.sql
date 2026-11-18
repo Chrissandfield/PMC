@@ -281,4 +281,8 @@ ALTER TABLE coaches ADD COLUMN email VARCHAR(190) NULL;
 ALTER TABLE coaches ADD COLUMN dbs_enhanced TINYINT(1) NOT NULL DEFAULT 0;
 ALTER TABLE dbs_confirmations ADD COLUMN enhanced_barred TINYINT(1) NOT NULL DEFAULT 0;
 
-INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests'), ('005_club_documents'), ('006_coach_pattern'), ('007_calendar_feeds'), ('008_coach_email'), ('009_dbs_level');
+ALTER TABLE clubs ADD COLUMN web_link VARCHAR(250) NULL;
+ALTER TABLE clubs ADD COLUMN declined_at DATETIME NULL;
+ALTER TABLE clubs ADD COLUMN decline_reason VARCHAR(500) NULL;
+
+INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests'), ('005_club_documents'), ('006_coach_pattern'), ('007_calendar_feeds'), ('008_coach_email'), ('009_dbs_level'), ('010_application_review');
