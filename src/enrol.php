@@ -140,7 +140,7 @@ function enrol_create(array $in): array
     if ($docErr) { $err[] = $docErr; }
     if ($plink !== '' && !preg_match('#^https?://\S+$#i', $plink)) { $err[] = 'The policy link must start with https://'; }
     elseif ($docB64 === null && $plink === '' && !$docErr) { $err[] = 'We need the safeguarding policy before we can list a club: attach the file or give the web link.'; }
-    foreach (['cf1', 'cf2', 'cf3', 'cf4'] as $c) { if (empty($in[$c])) { $err[] = 'Please tick all the confirmations at the bottom.'; break; } }
+    foreach (['cf1', 'cf2', 'cf3', 'cf4', 'cf5'] as $c) { if (empty($in[$c])) { $err[] = 'Please tick all the confirmations at the bottom.'; break; } }
 
     // Nets: one row per net (type, member price, non-member price). Blank rows are ignored.
     $groups = [];
@@ -187,10 +187,10 @@ function enrol_create(array $in): array
 
     $isEmail = true;
     $slug = unique_slug($club);
-    q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at, web_link)
-       VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?)",
+    q("INSERT INTO clubs (slug, name, town, county, postcode, phone, email, status, key_contact_name, key_contact_detail, safeguarding_name, safeguarding_contact, safeguarding_policy, submitted_at, web_link, terms_accepted_at)
+       VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?,?,?,?)",
       [$slug, $club, $town, $county, $postcode === '' ? null : $postcode, $cphone, $cdetail,
-       $cname, $cdetail, $sname, $semail, implode(' | ', array_filter([$docB64 !== null ? 'Uploaded file: ' . $docName : '', $plink])), now_utc(), $weblink === '' ? null : $weblink]);
+       $cname, $cdetail, $sname, $semail, implode(' | ', array_filter([$docB64 !== null ? 'Uploaded file: ' . $docName : '', $plink])), now_utc(), $weblink === '' ? null : $weblink, now_utc()]);
     $clubId = (int) q('SELECT id FROM clubs WHERE slug = ?', [$slug])->fetch()['id'];
 
     if ($crestB64 !== null) { q('INSERT INTO club_crests (club_id, mime, data_b64, permission_given_by) VALUES (?,?,?,?)', [$clubId, $crestMime, $crestB64, $cname]); }
@@ -350,6 +350,69 @@ function enrol_form_html(array $old = []): string
         . '<label class="check"><input type="checkbox" name="cf2" value="1"> The club agrees to its name, prices and opening times being shown publicly.</label>'
         . '<label class="check"><input type="checkbox" name="cf3" value="1"> Each coach listed agrees to their name, price and DBS status being shown publicly.</label>'
         . '<label class="check"><input type="checkbox" name="cf4" value="1"> I understand a DBS tick appears only after the club\'s safeguarding officer has confirmed the check.</label>'
+        . '<label class="check"><input type="checkbox" name="cf5" value="1"> I have read and agree to the <a href="/club-terms" target="_blank">club terms</a> (commission, card fees and cancellations).</label>'
         . '<button type="submit">Send my application</button></fieldset></form>';
     return $b;
+}
+
+
+// ---- Stripe follow-up: checklist, status refresh, reminders
+
+const STRIPE_CHECKLIST = [
+    "A bank account in the club's name (not a personal account)",
+    'The name, date of birth and home address of one person who can act for the club (for example the treasurer or chair), and their photo ID',
+    "The club's legal type: a CASC (Community Amateur Sports Club), an unincorporated association, a registered charity or a limited company, and its registration number if it has one",
+    "The club's website or social media page, and a contact phone number",
+];
+
+function stripe_checklist_html(): string
+{
+    return '<p class="muted">Before you start, have these ready. Stripe will ask for them (it can take 10 to 15 minutes):</p><ul class="muted">'
+        . implode('', array_map(fn($t) => '<li>' . h($t) . '</li>', STRIPE_CHECKLIST)) . '</ul>';
+}
+
+function stripe_checklist_text(): string { return '- ' . implode("\n- ", STRIPE_CHECKLIST); }
+
+/** Ask Stripe if an unfinished club account can take payments yet (at most every 5 minutes per club). Returns true if it just became ready. */
+function refresh_stripe_status(array $club): bool
+{
+    if (empty($club['stripe_account_id']) || (int) $club['stripe_charges_enabled'] === 1 || !stripe_configured()) { return false; }
+    if (!empty($club['stripe_checked_at']) && $club['stripe_checked_at'] > utc_string((new DateTimeImmutable('now', london()))->modify('-5 minutes'))) { return false; }
+    try {
+        $a = stripe_retrieve_account((string) $club['stripe_account_id']);
+        $on = !empty($a['charges_enabled']);
+        q('UPDATE clubs SET stripe_charges_enabled = ?, stripe_checked_at = ? WHERE id = ?', [$on ? 1 : 0, now_utc(), $club['id']]);
+        if ($on) { audit(null, 'stripe_became_ready', (string) $club['slug']); }
+        return $on;
+    } catch (Throwable $e) { error_log('PMC stripe refresh failed for club ' . $club['id'] . ': ' . $e->getMessage()); return false; }
+}
+
+function refresh_unfinished_stripe(): int
+{
+    $n = 0;
+    foreach (q('SELECT * FROM clubs WHERE stripe_account_id IS NOT NULL AND NOT stripe_charges_enabled')->fetchAll() as $c) { if (refresh_stripe_status($c)) { $n++; } }
+    return $n;
+}
+
+const STRIPE_REMIND_AFTER_DAYS = 3;
+const STRIPE_REMIND_EVERY_DAYS = 7;
+const STRIPE_REMIND_MAX = 3;
+
+/** Remind live clubs that have not finished Stripe sign-up: after 3 days, then weekly, at most 3 times. Returns how many were sent. */
+function send_stripe_reminders(): int
+{
+    $cut = utc_string((new DateTimeImmutable('now', london()))->modify('-' . STRIPE_REMIND_AFTER_DAYS . ' days'));
+    $again = utc_string((new DateTimeImmutable('now', london()))->modify('-' . STRIPE_REMIND_EVERY_DAYS . ' days'));
+    $sent = 0;
+    foreach (q("SELECT * FROM clubs WHERE status = 'active' AND NOT sponsored_partner AND NOT stripe_charges_enabled AND approved_at IS NOT NULL AND approved_at < ?
+                AND stripe_reminders < ? AND (stripe_reminded_at IS NULL OR stripe_reminded_at < ?)", [$cut, STRIPE_REMIND_MAX, $again])->fetchAll() as $c) {
+        $to = (string) $c['key_contact_detail']; if (!filter_var($to, FILTER_VALIDATE_EMAIL)) { continue; }
+        send_email($to, 'Finish setting up payments for ' . $c['name'],
+            "Hello {$c['key_contact_name']},\n\n{$c['name']} is live on PlayMoreCricket, but visitors cannot book and pay online until the club's payment account is set up.\n\n"
+            . "Log in, open your club page and press " . (empty($c['stripe_account_id']) ? 'Set up payments' : 'Continue Stripe sign-up') . ": " . $GLOBALS['cfg']['app_url'] . '/club/' . $c['slug']
+            . "\n\nHave these ready:\n" . stripe_checklist_text() . "\n\nIf you are stuck, reply to hello@playmorecricket.com.\n\nPlayMoreCricket");
+        q('UPDATE clubs SET stripe_reminded_at = ?, stripe_reminders = stripe_reminders + 1 WHERE id = ?', [now_utc(), $c['id']]);
+        $sent++;
+    }
+    return $sent;
 }

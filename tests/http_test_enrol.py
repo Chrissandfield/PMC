@@ -15,12 +15,14 @@ def csrf(h): return re.search(r'name="csrf" value="([0-9a-f]+)"',h).group(1)
 v=client()
 s,h,_=req(v,'/enrol'); ok(s==200 and 'Enrol your club' in h,'form loads')
 form={'csrf':csrf(h),'club':'Test Vale CC','town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cemail':'kay@test.local','cphone':'01892 555123',
- 'sname':'Sam Safe','semail':'sam@test.local','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1',
+ 'sname':'Sam Safe','semail':'sam@test.local','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1','cf5':'1',
  'g_type[]':['outdoor','outdoor','outdoor','indoor','outdoor','outdoor'],'g_member[]':['0','0','0','0','',''],'g_non[]':['10','10','10','15','',''],
  'c_name[]':['Sam Safe','Pat Coach','','','',''],'c_price[]':['30','25','','','',''],'c_qual[]':['ECB Core Coach (Level 3)','ECB Foundation Coach (Level 2)','','','',''],'c_other[]':['']*6,'c_email[]':['sam@coach.test','pat@coach.test','','','','']}
 for d in range(7): form[f'open[outdoor][{d}]']='9'; form[f'close[outdoor][{d}]']='19'; form[f'open[indoor][{d}]']='10'; form[f'close[indoor][{d}]']='18'
 bad=dict(form); bad['plink']=''
 s,h,_=req(v,'/enrol',bad); ok(s==200 and 'attach the file or give the web link' in h,'no policy refused')
+b2=dict(form); del b2['cf5']
+s,h,_=req(v,'/enrol',b2); ok(s==200 and 'tick all the confirmations' in h,'club terms tick required')
 b2=dict(form); b2['cphone']='12'
 s,h,_=req(v,'/enrol',b2); ok(s==200 and 'phone number' in h,'key contact phone required')
 b2=dict(form); b2['cemail']='not-an-email'
@@ -29,6 +31,7 @@ b2=dict(form); b2['c_email[]']=['','pat@coach.test','','','','']
 s,h,_=req(v,'/enrol',b2); ok(s==200 and 'email address is needed for each coach' in h,'coach email required')
 s,h,_=req(v,'/enrol',form); ok(s==200 and 'Thank you' in h,'application accepted: '+h[:0])
 ok(psql("select status from clubs where slug='test-vale-cc'")=='pending','club saved pending')
+ok(psql("select terms_accepted_at is not null from clubs where slug='test-vale-cc'")=='t','terms acceptance time recorded')
 ok(psql("select count(*) from nets n join clubs c on c.id=n.club_id where c.slug='test-vale-cc'")=='4','4 nets created')
 ok(psql("select count(*) from nets n join clubs c on c.id=n.club_id where c.slug='test-vale-cc' and kind='indoor'")=='1','1 indoor')
 ok(psql("select o.open_hour||'-'||o.close_hour from opening_hours o join nets n on n.id=o.net_id join clubs c on c.id=n.club_id where c.slug='test-vale-cc' and n.kind='indoor' and o.weekday=2 limit 1")=='10-18','indoor hours saved separately')

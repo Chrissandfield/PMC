@@ -134,6 +134,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         if (filter_var((string) $club['key_contact_detail'], FILTER_VALIDATE_EMAIL)) {
             send_email((string) $club['key_contact_detail'], $club['name'] . ' is now live on PlayMoreCricket', "Hello " . $club['key_contact_name'] . ",\n\nYour club is now live: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug']
                 . "\n\nWhat happens next:\n1. Online payments: so customers can book and pay online, your club connects its own Stripe account. Log in, open your club page and press Set up payments. Until then your page shows your diary but visitors cannot pay online.\n"
+                . "   Have these ready (Stripe asks for them, about 10 to 15 minutes):\n" . stripe_checklist_text() . "\n"
                 . "2. Logins: we will send you and each of your coaches login details separately. Coaches use theirs to set the hours they are available.\n"
                 . "3. Check your club page and tell us if anything is wrong: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug'] . "\n\nQuestions? Reply to hello@playmorecricket.com.\n\nPlayMoreCricket");
         }
@@ -288,7 +289,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         . '<label>Coach record to link (coaches only)<select name="coach_id">' . $copts . '</select></label>'
         . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
         . '<button type="submit">Create login</button></form><h2>Clubs and commission</h2>';
-    send_due_reminders();
+    send_due_reminders(); refresh_unfinished_stripe(); send_stripe_reminders();
     $pend = q("SELECT * FROM clubs WHERE status = 'pending' AND submitted_at IS NOT NULL AND declined_at IS NULL ORDER BY submitted_at")->fetchAll();
     if ($pend) {
         $b .= '<h2>Club applications waiting</h2>';
@@ -534,6 +535,17 @@ if (preg_match('#^/crest/([a-z0-9-]+)$#', $path, $m)) {
     echo base64_decode($row['data_b64']); exit;
 }
 
+if ($path === '/club-terms') {
+    page('Club terms (draft)', '<h1>Club terms</h1><p class="notice"><strong>DRAFT.</strong> This wording is a working draft and has not yet been reviewed by a solicitor. It will change before clubs go live.</p>'
+        . '<h2>Listing and bookings</h2><p>PlayMoreCricket lists the club\'s nets and coaches and lets visitors book and pay online. The club decides its own prices, opening hours and coaches, and is responsible for running each session safely.</p>'
+        . '<h2>Payments and commission</h2><p>Visitors pay the club directly through Stripe, using the club\'s own Stripe account. PlayMoreCricket takes a commission on each booking (10% unless we have agreed a commission-free period with the club in writing). Stripe\'s card processing fee is paid by the club. The club must keep its Stripe account in good standing.</p>'
+        . '<h2>Cancellations and refunds</h2><p>A visitor who cancels more than 24 hours before the start gets a full refund automatically. Within 24 hours the full fee applies. If the club cancels a booking (for example because of weather), the visitor is refunded in full.</p>'
+        . '<h2>Safeguarding</h2><p>The club confirms that it has a written safeguarding policy and that its safeguarding officer has checked each listed coach\'s DBS status (an Enhanced check including the children\'s barred list). PlayMoreCricket does not check this independently and shows a DBS tick only after the club\'s officer has confirmed it. The club must keep these details up to date and tell us straight away if a check lapses or a concern arises.</p>'
+        . '<h2>Insurance</h2><p>The club confirms it has suitable public liability insurance for the sessions booked through PlayMoreCricket.</p>'
+        . '<h2>Removal</h2><p>We may pause or remove a club from the site if safeguarding or payment details are not kept up to date, or for serious complaints. The club may leave at any time by telling us; upcoming paid bookings must be honoured or refunded.</p>'
+        . '<p class="muted">Questions: hello@playmorecricket.com</p>');
+}
+
 if ($path === '/enrol') {
     if ($method === 'POST') {
         csrf_check();
@@ -612,6 +624,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     $club = club_by_slug($m[1]);
     if (!$club || ($club['status'] !== 'active' && !$club['sponsored_partner'] && !($user && ($user['role'] === 'admin' || can_staff($user, $club))))) { http_response_code(404); page('Not found', '<p>We could not find that club.</p>'); }
     $sub = $m[2] ?? '';
+    if ($user && can_manage($user, $club) && refresh_stripe_status($club)) { $club = club_by_slug($m[1]); }
     $nets = club_nets((int) $club['id']);
     $netId = (int) ($_REQUEST['net'] ?? ($nets[0]['id'] ?? 0));
     $net = null; foreach ($nets as $n) { if ((int) $n['id'] === $netId) { $net = $n; } }
@@ -846,7 +859,7 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
     if (!$staff && !$online) { $b .= '<p class="muted">Online booking and payment for visitors is coming soon. Until then, contact the club: ' . h((string) $club['phone']) . ' · ' . h((string) $club['email']) . '</p>'; }
     if ($manager) {
         $state = empty($club['stripe_account_id']) ? 'Not set up yet' : ((int) $club['stripe_charges_enabled'] === 1 ? 'Payments are on' : 'Sign-up started, not finished');
-        $b .= '<h2>Online payments</h2><form method="post" action="/stripe/connect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $club['id'] . '">'
+        $b .= '<h2>Online payments</h2>' . ((int) $club['stripe_charges_enabled'] === 1 ? '' : '<div class="card">' . stripe_checklist_html() . '</div>') . '<form method="post" action="/stripe/connect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $club['id'] . '">'
             . '<span><strong>' . h($state) . '</strong><br><span class="muted">Customers pay the club directly through Stripe. Commission to PlayMoreCricket: ' . h(rtrim(rtrim((string) $club['commission_pct'], '0'), '.')) . '%.</span></span>'
             . ((int) $club['stripe_charges_enabled'] === 1 ? '' : '<button type="submit">' . (empty($club['stripe_account_id']) ? 'Set up payments' : 'Continue Stripe sign-up') . '</button>') . '</form>';
     }

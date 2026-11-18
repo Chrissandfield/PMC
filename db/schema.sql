@@ -285,4 +285,9 @@ ALTER TABLE clubs ADD COLUMN web_link VARCHAR(250) NULL;
 ALTER TABLE clubs ADD COLUMN declined_at DATETIME NULL;
 ALTER TABLE clubs ADD COLUMN decline_reason VARCHAR(500) NULL;
 
-INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests'), ('005_club_documents'), ('006_coach_pattern'), ('007_calendar_feeds'), ('008_coach_email'), ('009_dbs_level'), ('010_application_review');
+ALTER TABLE clubs ADD COLUMN stripe_checked_at DATETIME NULL;
+ALTER TABLE clubs ADD COLUMN stripe_reminded_at DATETIME NULL;
+ALTER TABLE clubs ADD COLUMN stripe_reminders INT NOT NULL DEFAULT 0;
+ALTER TABLE clubs ADD COLUMN terms_accepted_at DATETIME NULL;
+
+INSERT INTO schema_migrations (name) VALUES ('001_coach_availability'), ('002_trevor_bayley'), ('003_club_applications'), ('004_club_crests'), ('005_club_documents'), ('006_coach_pattern'), ('007_calendar_feeds'), ('008_coach_email'), ('009_dbs_level'), ('010_application_review'), ('011_stripe_followup_terms');

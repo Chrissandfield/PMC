@@ -7,4 +7,5 @@ require __DIR__ . '/../src/bootstrap.php';
 require_once __DIR__ . '/../src/enrol.php';
 $a = send_due_reminders();
 $c = send_availability_reminders();
-echo "application reminders: " . (is_int($a) ? $a : 'done') . ", coach availability reminders: $c\n";
+$sr = refresh_unfinished_stripe() . ' became ready, ' . send_stripe_reminders() . ' reminded';
+echo "application reminders: " . (is_int($a) ? $a : 'done') . ", coach availability reminders: $c, Stripe: $sr\n";

@@ -15,7 +15,7 @@ def csrf(h): return re.search(r'name="csrf" value="([0-9a-f]+)"',h).group(1)
 v=client()
 s,h,_=req(v,'/enrol'); ok(s==200 and 'Enrol your club' in h,'form loads')
 form={'csrf':csrf(h),'club':'Test Vale CC','town':'Testville','county':'Kent','postcode':'TN1 1AA','cname':'Kay Key','cemail':'kay@test.local','cphone':'01892 555123','weblink':'https://facebook.com/testvale',
- 'sname':'Sam Safe','semail':'sam@test.local','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1',
+ 'sname':'Sam Safe','semail':'sam@test.local','plink':'https://example.com/p','officer_coach':'1','cf1':'1','cf2':'1','cf3':'1','cf4':'1','cf5':'1',
  'g_type[]':['outdoor','outdoor','outdoor','indoor','outdoor','outdoor'],'g_member[]':['0','0','0','0','',''],'g_non[]':['10','10','10','15','',''],
  'c_name[]':['Sam Safe','Pat Coach','','','',''],'c_price[]':['30','25','','','',''],'c_qual[]':['ECB Core Coach (Level 3)','ECB Foundation Coach (Level 2)','','','',''],'c_other[]':['']*6,'c_email[]':['sam@coach.test','pat@coach.test','','','','']}
 for d in range(7): form[f'open[outdoor][{d}]']='9'; form[f'close[outdoor][{d}]']='19'; form[f'open[indoor][{d}]']='10'; form[f'close[indoor][{d}]']='18'
