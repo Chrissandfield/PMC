@@ -236,11 +236,30 @@ function enrol_create(array $in): array
 }
 
 /** Record that someone confirmed a coach's DBS check. Never takes or stores a certificate number. */
-function record_dbs_confirmation(int $coachId, ?int $tokenId, string $by, ?string $byEmail, string $method, string $checkedOn): void
+function record_dbs_confirmation(int $coachId, ?int $tokenId, string $by, ?string $byEmail, string $method, string $checkedOn, bool $enhanced = false): void
 {
-    q('UPDATE coaches SET dbs_checked = ?, dbs_checked_on = ?, dbs_method = ?, dbs_confirmed_by = ? WHERE id = ?', [1, $checkedOn, $method, $by, $coachId]);
-    q('INSERT INTO dbs_confirmations (coach_id, token_id, confirmed_by, confirmed_by_email, method, checked_on) VALUES (?,?,?,?,?,?)',
-      [$coachId, $tokenId, $by, $byEmail, $method, $checkedOn]);
+    q('UPDATE coaches SET dbs_checked = ?, dbs_checked_on = ?, dbs_method = ?, dbs_confirmed_by = ?, dbs_enhanced = ? WHERE id = ?', [1, $checkedOn, $method, $by, $enhanced ? 1 : 0, $coachId]);
+    q('INSERT INTO dbs_confirmations (coach_id, token_id, confirmed_by, confirmed_by_email, method, checked_on, enhanced_barred) VALUES (?,?,?,?,?,?,?)',
+      [$coachId, $tokenId, $by, $byEmail, $method, $checkedOn, $enhanced ? 1 : 0]);
+}
+
+/** A check dated more than this many years ago is flagged for the administrator. */
+const DBS_OLD_YEARS = 3;
+
+function dbs_is_old(?string $checkedOn): bool
+{
+    return $checkedOn !== null && $checkedOn !== '' && new DateTimeImmutable($checkedOn, london()) < (new DateTimeImmutable('today', london()))->modify('-' . DBS_OLD_YEARS . ' years');
+}
+
+/** Short admin note for one coach's confirmed check: level and age warnings. */
+function dbs_flags_html(array $x): string
+{
+    $o = '';
+    if (!empty($x['dbs_checked'])) {
+        $o .= !empty($x['dbs_enhanced']) ? ' &middot; Enhanced with barred list' : ' &middot; <strong>level not recorded</strong>';
+        if (dbs_is_old($x['dbs_checked_on'] ?? null)) { $o .= ' &middot; <strong>&#9888; checked over ' . DBS_OLD_YEARS . ' years ago, consider asking for a fresh check</strong>'; }
+    }
+    return $o;
 }
 
 function method_label(?string $m): string
