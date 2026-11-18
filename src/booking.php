@@ -142,7 +142,7 @@ function queue_confirmation_emails(array $b): void
     $paid = money((int) $b['price_pence']);
     send_email($b['customer_email'], 'Booking confirmed: ' . $b['reference'],
         "Hello {$b['customer_name']},\n\nYour booking is confirmed and paid ({$paid}).\n\n{$when}\nReference: {$b['reference']}\n\n"
-        . "View or cancel your booking: {$link}\n\nCancelling more than 24 hours before the start gives a full refund. Within 24 hours the full fee applies.\n\nPlayMoreCricket", (int) $b['id']);
+        . "View or cancel your booking: {$link}\nAdd it to your calendar: " . calendar_link($b['reference']) . "\n\nCancelling more than 24 hours before the start gives a full refund. Within 24 hours the full fee applies.\n\nPlayMoreCricket", (int) $b['id']);
     if (!empty($b['club_email'])) {
         send_email($b['club_email'], 'New booking: ' . $b['reference'],
             "A new paid booking.\n\n{$when}\nName: {$b['customer_name']}\nPhone: {$b['customer_phone']}\nEmail: {$b['customer_email']}\nPaid: {$paid}"
@@ -236,4 +236,39 @@ function customer_cancel(array $b): array
         send_email($ce, 'Session cancelled: ' . $b['reference'], 'This session was cancelled by the customer and refunded. ' . describe_booking($b) . "\n\nThe hour is free again.", (int) $b['id']);
     }
     return [true, 'Your booking has been cancelled and refunded in full.'];
+}
+
+
+/** One-booking calendar file link for the customer (same private token as the booking page). */
+function calendar_link(string $reference): string
+{
+    return $GLOBALS['cfg']['app_url'] . '/booking/' . rawurlencode($reference) . '.ics?t=' . booking_token($reference);
+}
+
+/** The day before: remind the customer and the coach about confirmed bookings starting tomorrow (London time). Returns the number of bookings reminded. */
+function send_booking_reminders(): int
+{
+    $now = new DateTimeImmutable('now', london());
+    $tomorrow = $now->modify('+1 day')->format('Y-m-d');
+    $rows = q("SELECT b.reference FROM bookings b WHERE b.status = 'confirmed' AND b.reminder_sent_at IS NULL AND b.starts_at > ? AND b.starts_at < ?",
+              [utc_string($now), utc_string($now->modify('+3 days'))])->fetchAll();
+    $n = 0;
+    foreach ($rows as $r) {
+        $b = booking_by_ref($r['reference']);
+        if (!$b || from_utc($b['starts_at'])->format('Y-m-d') !== $tomorrow) { continue; }
+        $when = describe_booking($b);
+        send_email($b['customer_email'], 'Reminder: your session tomorrow (' . $b['reference'] . ')',
+            "Hello {$b['customer_name']},\n\nA reminder of your booking tomorrow.\n\n{$when}\n\nView or cancel: " . booking_link($b['reference'])
+            . "\n(Cancelling within 24 hours of the start means the full fee applies.)\n\nPlayMoreCricket", (int) $b['id']);
+        if (($ce = coach_email($b)) !== null) {
+            send_email($ce, 'Reminder: coaching session tomorrow (' . $b['reference'] . ')',
+                "Hello {$b['coach_name']},\n\nA reminder of your coaching session tomorrow.\n\n{$when}"
+                . ($b['with_machine'] ? "\nBowling machine: yes" : '')
+                . ($b['is_junior'] ? "\nUNDER-18: {$b['child_first_name']}, aged {$b['child_age']}. A parent/guardian will be present." : '')
+                . "\n\nPlayMoreCricket", (int) $b['id']);
+        }
+        q('UPDATE bookings SET reminder_sent_at = ? WHERE id = ?', [now_utc(), $b['id']]);
+        $n++;
+    }
+    return $n;
 }

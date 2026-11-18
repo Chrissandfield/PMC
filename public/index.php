@@ -660,6 +660,13 @@ if ($path === '/stripe/return') {
 }
 
 // ---- Customer's booking page (link from the confirmation email; protected by a signed token)
+if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})\\.ics$#', $path, $im)) {
+    $b = booking_by_ref($im[1]);
+    if (!$b || $b['status'] !== 'confirmed' || !hash_equals(booking_token($b['reference']), (string) ($_REQUEST['t'] ?? ''))) { http_response_code(404); page('Not found', '<p>We could not find that booking.</p>'); }
+    $b['customer_name'] = '';
+    header('Content-Type: text/calendar; charset=utf-8'); header('Content-Disposition: attachment; filename="' . $b['reference'] . '.ics"');
+    echo ics_calendar('PlayMoreCricket booking', [$b], true); exit;
+}
 if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})(/cancel)?$#', $path, $bm)) {
     $b = booking_by_ref($bm[1]);
     $t = (string) ($_REQUEST['t'] ?? '');
