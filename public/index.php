@@ -76,7 +76,7 @@ if ($path === '/login') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -144,6 +144,23 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         email_officer_link($club, 'officer', (string) $club['safeguarding_name'], (string) $club['safeguarding_contact'], make_token((int) $club['id'], 'officer', (string) $club['safeguarding_name'], (string) $club['safeguarding_contact']), $others);
         audit((int) $user['id'], 'verification_resent', $club['slug']);
         flash('A new confirmation link has been emailed to ' . $club['safeguarding_name'] . '.'); redirect('/admin');
+    }
+    if ($path === '/admin/applications/link' && $method === 'POST') {
+        csrf_check();
+        $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+        if (!$club || $club['status'] !== 'pending') { flash('That application is not pending.', true); redirect('/admin'); }
+        if (($_POST['who'] ?? '') === 'second') {
+            $oc = q('SELECT id FROM coaches WHERE club_id = ? AND is_safeguarding_officer', [$club['id']])->fetch();
+            if (!$oc) { flash('This club has no coach who is also the safeguarding officer, so there is no second link.', true); redirect('/admin'); }
+            $raw = make_token((int) $club['id'], 'second', (string) $club['key_contact_name'], (string) $club['key_contact_detail'], [(int) $oc['id']]);
+            $who = 'the key contact (' . $club['key_contact_name'] . ')';
+        } else {
+            $raw = make_token((int) $club['id'], 'officer', (string) $club['safeguarding_name'], (string) $club['safeguarding_contact']);
+            $who = 'the safeguarding officer (' . $club['safeguarding_name'] . ')';
+        }
+        audit((int) $user['id'], 'verification_link_shown', $club['slug'] . ' ' . ($_POST['who'] ?? 'officer'));
+        flash('Private link for ' . $who . ', valid ' . TOKEN_DAYS . ' days. Send it only to them: ' . verify_link($raw));
+        redirect('/admin');
     }
     if ($path === '/admin/applications/confirm' && $method === 'POST') {
         csrf_check();
@@ -264,6 +281,8 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             $b .= '</ul><form method="post" action="/admin/applications/approve" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
                 . '<label class="check"><input type="checkbox" name="allow_unconfirmed" value="1"> Approve even if some coaches are unconfirmed</label><button type="submit">Approve and publish</button></form>'
                 . '<form method="post" action="/admin/applications/resend" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><button type="submit">Send the officer a new link</button></form>'
+                . '<form method="post" action="/admin/applications/link" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><button type="submit" name="who" value="officer" class="secondary">Show me the officer link to send myself</button>'
+                . (q('SELECT 1 FROM coaches WHERE club_id = ? AND is_safeguarding_officer', [$c['id']])->fetch() ? '<button type="submit" name="who" value="second" class="secondary">Show me the key contact link</button>' : '') . '</form>'
                 . '<form method="post" action="/admin/applications/confirm" class="row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '"><label>Confirmed by hand, note<input name="note" maxlength="120" placeholder="who, how, when"></label><button type="submit">Record</button></form></div>';
         }
         $b .= '<h2>All clubs</h2>';
