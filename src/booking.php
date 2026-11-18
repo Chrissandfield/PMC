@@ -123,6 +123,7 @@ function visitor_reserve(array $club, array $net, string $localStart, array $in)
         q("UPDATE bookings SET status = 'expired' WHERE id = ?", [$b['id']]);   // free the hour straight away
         return [false, 'We could not start the payment. Nothing has been charged. Please try again in a moment.', null];
     }
+    record_marketing_consent($club, $name, $email, $in);
     audit(null, 'booking_reserved', $ref . ' ' . $localStart . ' ' . $type);
     return [true, 'Reserved', (string) $s['url']];
 }
@@ -271,4 +272,65 @@ function send_booking_reminders(): int
         $n++;
     }
     return $n;
+}
+
+
+// ---- Marketing consent (optional, unticked boxes; separate from the booking) ----
+const MARKETING_PMC_WORDING = 'Email me news and updates from PlayMoreCricket and other clubs on PlayMoreCricket (sent by PlayMoreCricket; my details are not passed to those clubs).';
+const MARKETING_EVENTS_WORDING = 'Email me about cricket activities, events and offers.';
+function marketing_club_wording(string $clubName): string { return 'Email me news, offers and events from ' . $clubName . ' (the club will see my name and email).'; }
+
+/** Save (or refresh) consent for the lists the customer ticked. Nothing is saved for a box left unticked. */
+function record_marketing_consent(array $club, string $name, string $email, array $in): void
+{
+    $email = mb_strtolower($email);
+    $lists = [];
+    if (!empty($in['mk_pmc'])) { $lists['pmc'] = MARKETING_PMC_WORDING; }
+    if (!empty($in['mk_events'])) { $lists['events'] = MARKETING_EVENTS_WORDING; }
+    if (!empty($in['mk_club'])) { $lists['club-' . (int) $club['id']] = marketing_club_wording((string) $club['name']); }
+    foreach ($lists as $scope => $wording) {
+        $row = q('SELECT id FROM marketing_optins WHERE email = ? AND scope = ?', [$email, $scope])->fetch();
+        if ($row) { q('UPDATE marketing_optins SET name = ?, wording = ?, consented_at = ?, withdrawn_at = NULL WHERE id = ?', [$name, $wording, now_utc(), $row['id']]); }
+        else { q('INSERT INTO marketing_optins (email, name, scope, wording, consented_at) VALUES (?,?,?,?,?)', [$email, $name, $scope, $wording, now_utc()]); }
+    }
+}
+
+function unsubscribe_token(string $email): string
+{
+    $c = $GLOBALS['cfg']; $key = (string) ($c['app_secret'] ?: ($c['stripe_webhook_secret'] ?: $c['db_pass']));
+    return substr(hash_hmac('sha256', 'unsub:' . mb_strtolower($email), $key ?: 'pmc-dev'), 0, 24);
+}
+function unsubscribe_link(string $email): string
+{
+    return $GLOBALS['cfg']['app_url'] . '/unsubscribe?e=' . rawurlencode(mb_strtolower($email)) . '&t=' . unsubscribe_token($email);
+}
+
+/** Opted-in players for a list: 'pmc', 'events' or 'club-<id>'. */
+function marketing_list(string $scope): array
+{
+    $rows = q('SELECT email, name, consented_at FROM marketing_optins WHERE scope = ? AND withdrawn_at IS NULL ORDER BY consented_at DESC', [$scope])->fetchAll();
+    foreach ($rows as &$r) {
+        if (strpos($scope, 'club-') === 0) {
+            $s = q("SELECT COUNT(*) AS n, MIN(b.starts_at) AS first FROM bookings b JOIN nets n ON n.id = b.net_id WHERE n.club_id = ? AND LOWER(b.customer_email) = ? AND b.status IN ('confirmed','refunded')",
+                   [(int) substr($scope, 5), $r['email']])->fetch();
+        } else {
+            $s = q("SELECT COUNT(*) AS n, MIN(starts_at) AS first FROM bookings WHERE LOWER(customer_email) = ? AND status IN ('confirmed','refunded')", [$r['email']])->fetch();
+        }
+        $r['bookings'] = (int) $s['n']; $r['first'] = $s['first'];
+    }
+    return $rows;
+}
+
+function csv_cell(string $v): string
+{
+    if ($v !== '' && strpos('=+-@', $v[0]) !== false) { $v = "'" . $v; }   // stop spreadsheet formulas
+    return '"' . str_replace('"', '""', $v) . '"';
+}
+function marketing_csv(string $scope): string
+{
+    $out = "Name,Email,Agreed on,Bookings\r\n";
+    foreach (marketing_list($scope) as $r) {
+        $out .= implode(',', [csv_cell((string) $r['name']), csv_cell((string) $r['email']), csv_cell(from_utc($r['consented_at'])->format('Y-m-d')), (string) $r['bookings']]) . "\r\n";
+    }
+    return $out;
 }

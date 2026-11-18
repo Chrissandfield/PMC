@@ -140,8 +140,8 @@ if ($path === '/account/password') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/users/link', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
-    require_admin();
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/users/link', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy', '/admin/players.csv'], true)) {
+    $u = require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
         $pct = (float) ($_POST['commission_pct'] ?? 10);
@@ -152,6 +152,11 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         q('UPDATE clubs SET commission_pct = ?, commission_free_until = ? WHERE id = ?', [number_format($pct, 2, '.', ''), $free !== '' ? $free : null, (int) ($_POST['club_id'] ?? 0)]);
         audit((int) $user['id'], 'commission_changed', 'club ' . (int) $_POST['club_id'] . ' ' . $pct . '% until ' . $free);
         flash('Commission saved.'); redirect('/admin');
+    }
+    if ($path === '/admin/players.csv') {
+        audit((int) $u['id'], 'players_csv_downloaded', ($_GET['scope'] ?? '') === 'events' ? 'events' : 'pmc');
+        header('Content-Type: text/csv; charset=utf-8'); header('Content-Disposition: attachment; filename="playmorecricket-players.csv"');
+        echo marketing_csv(($_GET['scope'] ?? '') === 'events' ? 'events' : 'pmc'); exit;
     }
     if ($path === '/admin/migrate' && $method === 'POST') {
         csrf_check();
@@ -345,7 +350,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             . '<form method="post" action="/admin/users/link" class="card narrow">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $target['id'] . '"><p class="muted">Email not working yet, or they cannot find it? Make a one-time link to send them yourself.</p><button type="submit" class="secondary">Show me a one-time password link</button></form>');
     }
     $pending = pending_migrations();
-    $b = '<h1>Admin</h1><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()
+    $b = '<h1>Admin</h1><p>Players who agreed to hear from PlayMoreCricket and clubs: <strong>' . count(marketing_list('pmc')) . '</strong> · <a href="/admin/players.csv">Download CSV</a> &nbsp;|&nbsp; Cricket activities, events and offers: <strong>' . count(marketing_list('events')) . '</strong> · <a href="/admin/players.csv?scope=events">Download CSV</a></p><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()
        . '<span>' . ($pending ? '<strong>' . count($pending) . ' update(s) waiting:</strong> ' . h(implode(', ', array_keys($pending))) : 'The database is up to date.') . '</span>'
        . '<button type="submit">Apply updates</button></form>';
     $clubsAll = q('SELECT id, name FROM clubs ORDER BY name')->fetchAll();
@@ -685,6 +690,7 @@ if (preg_match('#^/booking/(PMC-[A-Z0-9]{6})(/cancel)?$#', $path, $bm)) {
         $body .= $ok24 ? '<form method="post" action="/booking/' . h($b['reference']) . '/cancel" class="card">' . csrf_field() . '<input type="hidden" name="t" value="' . h($t) . '"><p>You can cancel for a full refund up to 24 hours before the start.</p><button type="submit">Cancel and refund</button></form>'
                        : '<p class="muted">This session starts in less than 24 hours, so the full fee applies. Contact the club if there is a problem: ' . h((string) $b['club_email']) . '</p>';
     }
+    $body .= '<p class="muted"><a href="' . h(unsubscribe_link((string) $b['customer_email'])) . '">Stop offers and events emails</a></p>';
     page('Your booking', $body);
 }
 
@@ -695,6 +701,36 @@ if (preg_match('#^/crest/([a-z0-9-]+)$#', $path, $m)) {
     echo base64_decode($row['data_b64']); exit;
 }
 
+if ($path === '/privacy') {
+    page('Privacy notice (draft)', '<h1>Privacy notice</h1><p class="notice"><strong>DRAFT.</strong> This wording is a working draft and has not yet been reviewed by a solicitor. It will change before launch.</p>'
+        . '<h2>Who we are</h2><p>PlayMoreCricket lets you hire cricket nets and book coaches at clubs. We run the website and take bookings; the club provides the nets and coaching.</p>'
+        . '<h2>What we collect and why</h2><p>When you book we keep your name, email address and phone number, the booking details and the payment reference, so we can run your booking, send you confirmations and reminders, take payment and give refunds. For an under-18 booking we also keep the child\'s first name and age, so the club and coach know who is attending. We do not store your card details: Stripe handles payment.</p>'
+        . '<h2>Who sees it</h2><p>The club and the coach you booked with see the details they need to run the session. The coach does not see your phone number or email address. Stripe processes the payment.</p>'
+        . '<h2>Offers and events (optional)</h2><p>There are three separate optional boxes when you book, and you can tick any, all or none: (1) news and updates from PlayMoreCricket and other clubs on PlayMoreCricket, which we send ourselves and do not pass your details to those clubs; (2) cricket activities, events and offers; (3) news, offers and events from the club you are booking with, in which case that club can see your name and email address on its list of players who agreed. We do not sell, rent or give your details or these lists to any external party or other third party. The only people who see them are us, our service providers who help us run the site, and, for box 3, the club you chose. Ticking is never needed to book. You can stop these emails at any time using the link in each email, or on your booking page. We keep a record of what you agreed to and when.</p>'
+        . '<h2>Under-18s</h2><p>We only ever contact the adult who made the booking, never a child, and we do not use a child\'s details for marketing.</p>'
+        . '<h2>How long we keep it</h2><p>We keep booking details for a limited period after your last booking and then delete or anonymise them. (Period to be confirmed.)</p>'
+        . '<h2>Your rights</h2><p>You can ask to see, correct or delete your information, or complain to the Information Commissioner\'s Office (ico.org.uk). Contact the address in our emails.</p>');
+}
+if ($path === '/unsubscribe') {
+    $e = mb_strtolower(trim((string) ($_REQUEST['e'] ?? ''))); $t = (string) ($_REQUEST['t'] ?? '');
+    if ($e === '' || !hash_equals(unsubscribe_token($e), $t)) { http_response_code(404); page('Not found', '<p>That link is not valid.</p>'); }
+    if ($method === 'POST') {
+        csrf_check();
+        q('UPDATE marketing_optins SET withdrawn_at = ? WHERE email = ? AND withdrawn_at IS NULL', [now_utc(), $e]);
+        audit(null, 'marketing_withdrawn', $e);
+        page('Unsubscribed', '<h1>You are unsubscribed</h1><p>We will not send you offers or events emails. Booking confirmations and reminders still come to you, as they are part of your booking.</p>');
+    }
+    page('Unsubscribe', '<h1>Stop offers and events emails</h1><form method="post" class="card narrow">' . csrf_field()
+        . '<input type="hidden" name="e" value="' . h($e) . '"><input type="hidden" name="t" value="' . h($t) . '"><p>Stop all offers and events emails to ' . h($e) . ' from PlayMoreCricket and its clubs?</p><button type="submit">Yes, unsubscribe me</button></form>');
+}
+if (preg_match('#^/players/([a-z0-9-]+)\\.csv$#', $path, $pm)) {
+    $u = require_login();
+    $pc = q('SELECT * FROM clubs WHERE slug = ?', [$pm[1]])->fetch();
+    if (!$pc || !can_manage($u, $pc)) { http_response_code(403); page('Not allowed', '<p>You cannot download that list.</p>'); }
+    audit((int) $u['id'], 'players_csv_downloaded', $pc['slug']);
+    header('Content-Type: text/csv; charset=utf-8'); header('Content-Disposition: attachment; filename="players-' . $pc['slug'] . '.csv"');
+    echo marketing_csv('club-' . (int) $pc['id']); exit;
+}
 if ($path === '/club-terms') {
     page('Club terms (draft)', '<h1>Club terms</h1><p class="notice"><strong>DRAFT.</strong> This wording is a working draft and has not yet been reviewed by a solicitor. It will change before clubs go live.</p>'
         . '<h2>Listing and bookings</h2><p>PlayMoreCricket lists the club\'s nets and coaches and lets visitors book and pay online. The club decides its own prices, opening hours and coaches, and is responsible for running each session safely.</p>'
@@ -846,6 +882,10 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
            . '<label>Child\'s first name<input name="child_first_name" value="' . $v('child_first_name') . '"></label><label>Child\'s age<input name="child_age" value="' . $v('child_age') . '" inputmode="numeric" size="3"></label>'
            . '<label class="check"><input type="checkbox" name="parent_confirmed" value="1"> I am the parent/guardian (or have their permission), and a parent/guardian will be present</label></fieldset>'
            . '<label class="check"><input type="checkbox" name="accept_terms" value="1" required> I accept the booking terms: cancel more than 24 hours before the start for a full refund; within 24 hours the full fee applies. We use your details only to manage your booking.</label>'
+           . '<fieldset><legend>Optional: offers and events</legend><label class="check"><input type="checkbox" name="mk_pmc" value="1"> ' . h(MARKETING_PMC_WORDING) . '</label>'
+           . '<label class="check"><input type="checkbox" name="mk_events" value="1"> ' . h(MARKETING_EVENTS_WORDING) . '</label>'
+           . '<label class="check"><input type="checkbox" name="mk_club" value="1"> ' . h(marketing_club_wording((string) $club['name'])) . '</label>'
+           . '<p class="muted">You can say no and still book. We never sell or give your details to anyone else. You can stop these emails at any time. See our <a href="/privacy">privacy notice</a>.</p></fieldset>'
            . '<button type="submit">Continue to payment</button></form><p class="muted">Payment is taken securely by Stripe. The hour is held for 30 minutes while you pay.</p>';
         page('Book', $b);
     }
@@ -1047,6 +1087,16 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
             . '<div class="row"><label>Name<input name="name" required></label><label>&pound; per hour<input name="price" inputmode="decimal" size="5" required></label>'
             . '<label>Qualification<select name="qual">' . $qopts('') . '</select></label><label>If other, which<input name="qual_other" maxlength="100"></label>'
             . '<label>Email<input type="email" name="email" required></label></div><button type="submit">Add coach</button></form>';
+    }
+    if ($manager) {
+        $pl = marketing_list('club-' . (int) $club['id']);
+        $b .= '<h2 id="players">Players who agreed to hear from ' . h($club['name']) . '</h2><p class="muted">Only people who ticked the box for this club when booking, and have not unsubscribed. Use this list only for offers and events from the club, and include an unsubscribe option in every message.</p>';
+        if (!$pl) { $b .= '<p>No one yet.</p>'; }
+        else {
+            $b .= '<p>' . count($pl) . ' player(s). <a href="/players/' . h($club['slug']) . '.csv">Download as a spreadsheet (CSV)</a></p><table><tr><th>Name</th><th>Email</th><th>Agreed on</th><th>Bookings</th></tr>';
+            foreach (array_slice($pl, 0, 50) as $r) { $b .= '<tr><td>' . h($r['name']) . '</td><td>' . h($r['email']) . '</td><td>' . h(from_utc($r['consented_at'])->format('j M Y')) . '</td><td>' . (int) $r['bookings'] . '</td></tr>'; }
+            $b .= '</table>' . (count($pl) > 50 ? '<p class="muted">First 50 shown; the download has everyone.</p>' : '');
+        }
     }
     if ($manager) { $b .= calendar_box('club', (int) $club['id'], csrf_field(), '/club/' . $club['slug']); }
     page($club['name'], $b);
