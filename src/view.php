@@ -28,6 +28,7 @@ function page(string $title, string $body): never
     if ($u && $u['role'] === 'admin') { echo '<a href="/admin">Admin</a>'; }
     if ($u && in_array($u['role'], ['coach', 'club_contact'], true)) { echo '<a href="/coach/availability">Coach availability</a>'; }
     if ($u) {
+        echo '<a href="/account/password">Password</a>';
         echo '<form method="post" action="/logout" class="inline">' . csrf_field() . '<button class="link" type="submit">Log out (' . h($u['name']) . ')</button></form>';
     } else {
         echo '<a href="/login">Log in</a>';

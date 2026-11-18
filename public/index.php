@@ -60,6 +60,7 @@ if ($path === '/setup') {
 if ($path === '/login') {
     if ($method === 'POST') {
         csrf_check();
+        if (login_locked((string) ($_POST['email'] ?? ''))) { flash('Too many failed attempts. Please wait ' . LOGIN_WINDOW_MINUTES . ' minutes and try again, or use Forgot your password.', true); redirect('/login'); }
         if (login((string) ($_POST['email'] ?? ''), (string) ($_POST['password'] ?? ''))) {
             $u = q('SELECT role, club_id FROM users WHERE id = ?', [$_SESSION['uid']])->fetch();
             $club = $u['club_id'] ? q('SELECT slug FROM clubs WHERE id = ?', [$u['club_id']])->fetch() : null;
@@ -71,12 +72,75 @@ if ($path === '/login') {
     page('Log in', '<h1>Log in</h1><form method="post" class="card narrow">' . csrf_field()
         . '<label>Email<input type="email" name="email" required autocomplete="username"></label>'
         . '<label>Password<input type="password" name="password" required autocomplete="current-password"></label>'
-        . '<button type="submit">Log in</button></form>');
+        . '<button type="submit">Log in</button></form><p class="muted"><a href="/forgot">Forgot your password?</a></p>');
+}
+
+if ($path === '/forgot') {
+    if ($method === 'POST') {
+        csrf_check();
+        $em = trim((string) ($_POST['email'] ?? ''));
+        $u = filter_var($em, FILTER_VALIDATE_EMAIL) ? q('SELECT id, email, name FROM users WHERE lower(email) = lower(?)', [$em])->fetch() : null;
+        if ($u) {
+            $recent = (int) q('SELECT COUNT(*) AS n FROM password_tokens WHERE user_id = ? AND created_at >= ?', [$u['id'], utc_string((new DateTimeImmutable('now', london()))->modify('-1 hour'))])->fetch()['n'];
+            if ($recent < 3) { send_password_link($u, false); audit((int) $u['id'], 'password_reset_requested'); }
+        }
+        flash('If that email has a login, we have sent it a link to choose a new password. It works for ' . PW_RESET_HOURS . ' hours.');
+        redirect('/forgot');
+    }
+    page('Forgot your password', '<h1>Forgot your password?</h1><p class="muted">Enter the email you log in with and we will send you a private link to choose a new password.</p>'
+        . '<form method="post" class="card narrow">' . csrf_field() . '<label>Email<input type="email" name="email" required autocomplete="username"></label><button type="submit">Send me a link</button></form>');
+}
+
+if (preg_match('#^/set-password/([0-9a-f]{48})$#', $path, $pm)) {
+    $tk = password_token_lookup($pm[1]);
+    if (!$tk) { http_response_code(410); page('Link not valid', '<h1>This link is not valid</h1><p>It may have expired or already been used. <a href="/forgot">Get a new link</a>.</p>'); }
+    if ($method === 'POST') {
+        csrf_check();
+        $pw = (string) ($_POST['password'] ?? ''); $pw2 = (string) ($_POST['password2'] ?? '');
+        if (strlen($pw) < PW_MIN) { flash('Please use at least ' . PW_MIN . ' characters.', true); redirect($path); }
+        if ($pw !== $pw2) { flash('The two passwords do not match.', true); redirect($path); }
+        $tu = q('SELECT id, email FROM users WHERE id = ?', [$tk['user_id']])->fetch();
+        if (!$tu || strcasecmp($pw, (string) $tu['email']) === 0) { flash('Please choose a password that is not your email address.', true); redirect($path); }
+        q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($pw, PASSWORD_DEFAULT), $tk['user_id']]);
+        q('UPDATE password_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [utc_string(new DateTimeImmutable('now', london())), $tk['user_id']]);
+        q('DELETE FROM login_failures WHERE lower(email) = lower(?)', [$tu['email']]);
+        audit((int) $tk['user_id'], 'password_set', $tk['purpose']);
+        flash('Your password is saved. Please log in.'); redirect('/login');
+    }
+    page('Choose a password', '<h1>Choose a password</h1><form method="post" class="card narrow">' . csrf_field()
+        . '<label>New password (at least ' . PW_MIN . ' characters)<input type="password" name="password" required minlength="' . PW_MIN . '" autocomplete="new-password"></label>'
+        . '<label>Type it again<input type="password" name="password2" required minlength="' . PW_MIN . '" autocomplete="new-password"></label>'
+        . '<button type="submit">Save password</button></form>');
+}
+
+if ($path === '/account/password') {
+    $u = require_login();
+    if ($method === 'POST') {
+        csrf_check();
+        $row = q('SELECT password_hash, email FROM users WHERE id = ?', [$u['id']])->fetch();
+        $cur = (string) ($_POST['current'] ?? ''); $pw = (string) ($_POST['password'] ?? ''); $pw2 = (string) ($_POST['password2'] ?? '');
+        if (login_locked((string) $row['email'])) { flash('Too many failed attempts. Please wait ' . LOGIN_WINDOW_MINUTES . ' minutes.', true); redirect('/account/password'); }
+        if (!password_verify($cur, (string) $row['password_hash'])) {
+            q('INSERT INTO login_failures (email, ip, attempted_at) VALUES (?,?,?)', [$row['email'], client_ip(), utc_string(new DateTimeImmutable('now', london()))]);
+            flash('Your current password is not right.', true); redirect('/account/password');
+        }
+        if (strlen($pw) < PW_MIN) { flash('Please use at least ' . PW_MIN . ' characters.', true); redirect('/account/password'); }
+        if ($pw !== $pw2) { flash('The two new passwords do not match.', true); redirect('/account/password'); }
+        q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($pw, PASSWORD_DEFAULT), $u['id']]);
+        q('UPDATE password_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL', [utc_string(new DateTimeImmutable('now', london())), $u['id']]);
+        audit((int) $u['id'], 'password_changed');
+        flash('Your password has been changed.'); redirect('/account/password');
+    }
+    page('Change password', '<h1>Change password</h1><form method="post" class="card narrow">' . csrf_field()
+        . '<label>Current password<input type="password" name="current" required autocomplete="current-password"></label>'
+        . '<label>New password (at least ' . PW_MIN . ' characters)<input type="password" name="password" required minlength="' . PW_MIN . '" autocomplete="new-password"></label>'
+        . '<label>Type the new one again<input type="password" name="password2" required minlength="' . PW_MIN . '" autocomplete="new-password"></label>'
+        . '<button type="submit">Change password</button></form>');
 }
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/users/link', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy'], true)) {
     require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -135,10 +199,11 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             send_email((string) $club['key_contact_detail'], $club['name'] . ' is now live on PlayMoreCricket', "Hello " . $club['key_contact_name'] . ",\n\nYour club is now live: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug']
                 . "\n\nWhat happens next:\n1. Online payments: so customers can book and pay online, your club connects its own Stripe account. Log in, open your club page and press Set up payments. Until then your page shows your diary but visitors cannot pay online.\n"
                 . "   Have these ready (Stripe asks for them, about 10 to 15 minutes):\n" . stripe_checklist_text() . "\n"
-                . "2. Logins: we will send you and each of your coaches login details separately. Coaches use theirs to set the hours they are available.\n"
+                . "2. Logins: you and each of your coaches will get a separate email with a private link to choose a password. Coaches use their login to set the hours they are available.\n"
                 . "3. Check your club page and tell us if anything is wrong: " . $GLOBALS['cfg']['app_url'] . '/club/' . $club['slug'] . "\n\nQuestions? Reply to hello@playmorecricket.com.\n\nPlayMoreCricket");
         }
-        flash($club['name'] . ' is now live.'); redirect('/admin');
+        [$madeLogins, $loginNotes] = create_club_logins($club);
+        flash($club['name'] . ' is now live. ' . $madeLogins . ' login(s) created and emailed a set-up link.' . ($loginNotes ? ' Note: ' . implode('; ', $loginNotes) . '.' : '')); redirect('/admin');
     }
     if ($path === '/admin/applications/resend' && $method === 'POST') {
         csrf_check();
@@ -224,6 +289,14 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         header('Content-Disposition: attachment; filename="' . str_replace('"', '', $d['filename']) . '"');
         echo base64_decode($d['data_b64']); exit;
     }
+    if ($path === '/admin/users/link' && $method === 'POST') {
+        csrf_check();
+        $tu = q('SELECT id, email, name FROM users WHERE id = ?', [(int) ($_POST['id'] ?? 0)])->fetch();
+        if (!$tu) { flash('That login does not exist.', true); redirect('/admin'); }
+        $raw = password_token_make((int) $tu['id'], 'reset', 48);
+        audit((int) $user['id'], 'password_link_shown', $tu['email']);
+        flash('One-time password link for ' . $tu['name'] . ' (works for 48 hours, send it only to them): ' . password_link($raw)); redirect('/admin/users/edit?id=' . (int) $tu['id']);
+    }
     if ($path === '/admin/users/update' && $method === 'POST') {
         csrf_check();
         $id = (int) ($_POST['id'] ?? 0); $email = trim((string) ($_POST['email'] ?? '')); $name = trim((string) ($_POST['name'] ?? '')); $pw = (string) ($_POST['password'] ?? '');
@@ -268,7 +341,8 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
             . '<label>Club (ignored for administrators)<select name="club_id">' . $clubopts . '</select></label>'
             . '<label>Coach record to link (coaches only, must be at the chosen club)<select name="coach_id">' . $copts . '</select></label>'
             . '<label>New password (leave blank to keep the current one)<input type="password" name="password" minlength="10" autocomplete="new-password"></label>'
-            . '<button type="submit">Save</button> <a href="/admin">Cancel</a></form>');
+            . '<button type="submit">Save</button> <a href="/admin">Cancel</a></form>'
+            . '<form method="post" action="/admin/users/link" class="card narrow">' . csrf_field() . '<input type="hidden" name="id" value="' . (int) $target['id'] . '"><p class="muted">Email not working yet, or they cannot find it? Make a one-time link to send them yourself.</p><button type="submit" class="secondary">Show me a one-time password link</button></form>');
     }
     $pending = pending_migrations();
     $b = '<h1>Admin</h1><h2>Database updates</h2><form method="post" action="/admin/migrate" class="card row">' . csrf_field()

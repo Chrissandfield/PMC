@@ -47,5 +47,5 @@ psql("update clubs set declined_at=null, safeguarding_confirmed_at=now(), safegu
 s,h,_=req(a,'/admin'); req(a,'/admin/applications/approve',{'csrf':csrf(h),'club_id':cid,'allow_unconfirmed':'1'})
 ok(psql("select status from clubs where id="+cid)=='active','approved')
 b=psql("select body from email_outbox where to_email='kay@test.local' and subject like '%is now live%'")
-ok('Set up payments' in b and 'login details' in b,'approval email explains next steps')
+ok('Set up payments' in b and 'choose a password' in b,'approval email explains next steps')
 print('FAILS',fails)
