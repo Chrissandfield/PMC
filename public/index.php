@@ -140,7 +140,7 @@ if ($path === '/account/password') {
 
 if ($path === '/logout' && $method === 'POST') { csrf_check(); logout(); redirect('/'); }
 
-if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/users/link', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy', '/admin/players.csv'], true)) {
+if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/users', '/admin/users/edit', '/admin/users/update', '/admin/users/link', '/admin/stripe/disconnect', '/admin/applications/approve', '/admin/applications/resend', '/admin/applications/link', '/admin/applications/decline', '/admin/applications/confirm', '/admin/coach/dbs', '/admin/policy', '/admin/players.csv', '/admin/reverify'], true)) {
     $u = require_admin();
     if ($path === '/admin/commission' && $method === 'POST') {
         csrf_check();
@@ -209,6 +209,16 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         }
         [$madeLogins, $loginNotes] = create_club_logins($club);
         flash($club['name'] . ' is now live. ' . $madeLogins . ' login(s) created and emailed a set-up link.' . ($loginNotes ? ' Note: ' . implode('; ', $loginNotes) . '.' : '')); redirect('/admin');
+    }
+    if ($path === '/admin/reverify' && $method === 'POST') {
+        csrf_check();
+        if (empty($_POST['confirm'])) { flash('Please tick the box to confirm.', true); redirect('/admin'); }
+        $one = (int) ($_POST['club_id'] ?? 0);
+        $clubs = $one ? q('SELECT * FROM clubs WHERE id = ?', [$one])->fetchAll()
+                      : q("SELECT * FROM clubs WHERE status = 'active' OR sponsored_partner ORDER BY name")->fetchAll();
+        $out = []; $bad = false;
+        foreach ($clubs as $rc) { [$rok, $rmsg] = reverify_club($rc, (int) $u['id']); $out[] = $rmsg; $bad = $bad || !$rok; }
+        flash($out ? implode(' ', $out) : 'No clubs to re-verify.', $bad || !$out); redirect('/admin');
     }
     if ($path === '/admin/applications/resend' && $method === 'POST') {
         csrf_check();
@@ -367,7 +377,7 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
         . '<label>Club<select name="club_id">' . $opts . '</select></label>'
         . '<label>Coach record to link (coaches only)<select name="coach_id">' . $copts . '</select></label>'
         . '<label>Password (at least 10 characters)<input type="password" name="password" required minlength="10" autocomplete="new-password"></label>'
-        . '<button type="submit">Create login</button></form><h2>Clubs and commission</h2>';
+        . '<button type="submit">Create login</button></form><form method="post" action="/admin/reverify" class="card row">' . csrf_field() . '<label><input type="checkbox" name="confirm" value="1"> Ask the safeguarding officer of every live club to re-confirm everything at once (removes all their DBS ticks and policy confirmations until they do)</label><button type="submit">Re-verify all clubs</button></form><h2>Clubs and commission</h2>';
     send_due_reminders(); refresh_unfinished_stripe(); send_stripe_reminders();
     $pend = q("SELECT * FROM clubs WHERE status = 'pending' AND submitted_at IS NOT NULL AND declined_at IS NULL ORDER BY submitted_at")->fetchAll();
     if ($pend) {
@@ -431,6 +441,9 @@ if (in_array($path, ['/admin', '/admin/commission', '/admin/migrate', '/admin/us
                 . ($x['dbs_checked'] ? '<button type="submit" name="action" value="clear">Remove tick</button>' : '') . '</form></div>';
         }
         $b .= '</details>';
+        $b .= '<form method="post" action="/admin/reverify" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
+            . '<label><input type="checkbox" name="confirm" value="1"> Ask the safeguarding officer to confirm this club again (removes the DBS ticks and policy confirmation until they do)</label>'
+            . '<button type="submit">Re-verify this club</button></form>';
         if ($has) {
             $b .= '<form method="post" action="/admin/stripe/disconnect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $c['id'] . '">'
                 . '<label><input type="checkbox" name="confirm" value="1"> Disconnect (use before switching from sandbox to live)</label>'

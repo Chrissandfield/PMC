@@ -94,19 +94,21 @@ function token_lookup(string $raw): array
     return [$row, 'ok'];
 }
 
-function email_officer_link(array $club, string $role, string $name, string $email, string $raw, array $coachNames): void
+function email_officer_link(array $club, string $role, string $name, string $email, string $raw, array $coachNames, bool $reverify = false): void
 {
     $link = verify_link($raw);
     $list = $coachNames ? "\nCoaches to confirm:\n- " . implode("\n- ", $coachNames) . "\n" : '';
     if ($role === 'officer') {
-        $body = "Hello $name,\n\n{$club['name']} has applied to be listed on PlayMoreCricket, and you are named as the club's safeguarding officer.\n\n"
+        $intro = $reverify ? "{$club['name']} is on PlayMoreCricket, and you are named as the club's safeguarding officer. We are re-checking every club's safeguarding details before we launch, so please confirm them again.\n\n"
+                           : "{$club['name']} has applied to be listed on PlayMoreCricket, and you are named as the club's safeguarding officer.\n\n";
+        $body = "Hello $name,\n\n" . $intro
               . "Before the club goes live we need you to confirm two things:\n"
               . "1. The club has a written safeguarding policy in place.\n"
               . "2. For each coach, that you have seen their DBS certificate, or checked their status on the DBS Update Service, and the date.\n$list\n"
               . "Please use this private link (it works for " . TOKEN_DAYS . " days):\n$link\n\n"
               . "We never ask for or keep DBS certificate numbers. We keep only your name, the date, and how the check was done.\n"
               . "If you are not the club's safeguarding officer, please reply to hello@playmorecricket.com and do not use the link.\n\nPlayMoreCricket";
-        $subject = 'Please confirm ' . $club['name'] . "'s safeguarding details";
+        $subject = ($reverify ? 'Please re-confirm ' : 'Please confirm ') . $club['name'] . "'s safeguarding details";
     } else {
         $body = "Hello $name,\n\n{$club['name']} has applied to be listed on PlayMoreCricket. The club's safeguarding officer is also a coach, so they cannot confirm their own DBS check. We are asking you to confirm it instead.\n$list\n"
               . "Please use this private link (it works for " . TOKEN_DAYS . " days):\n$link\n\n"
@@ -415,4 +417,34 @@ function send_stripe_reminders(): int
         $sent++;
     }
     return $sent;
+}
+
+
+/**
+ * Ask a live club's safeguarding officer to confirm everything again, all coaches at once.
+ * Clears the coaches' DBS ticks and the policy confirmation (until re-confirmed, junior sessions cannot be booked with those coaches),
+ * cancels any older unused links, and emails a fresh private link. If the officer is also a coach, the key contact is asked to confirm that coach.
+ * Nothing else about the club changes. Returns [ok, message].
+ */
+function reverify_club(array $club, int $adminId): array
+{
+    $semail = (string) $club['safeguarding_contact'];
+    if (!filter_var($semail, FILTER_VALIDATE_EMAIL) || trim((string) $club['safeguarding_name']) === '') { return [false, $club['name'] . ': no safeguarding officer email on record.']; }
+    q('UPDATE verification_tokens SET expires_at = ? WHERE club_id = ? AND expires_at > ?', [now_utc(), $club['id'], now_utc()]);
+    q('UPDATE clubs SET safeguarding_confirmed_at = NULL, safeguarding_confirmed_by = NULL WHERE id = ?', [$club['id']]);
+    q('UPDATE coaches SET dbs_checked = ?, dbs_checked_on = NULL, dbs_method = NULL, dbs_confirmed_by = NULL, dbs_enhanced = ? WHERE club_id = ?', [0, 0, $club['id']]);
+    $all = q('SELECT id, name, is_safeguarding_officer FROM coaches WHERE club_id = ? AND active ORDER BY id', [$club['id']])->fetchAll();
+    $others = array_values(array_filter($all, fn($c) => !$c['is_safeguarding_officer']));
+    $self = array_values(array_filter($all, fn($c) => $c['is_safeguarding_officer']));
+    email_officer_link($club, 'officer', (string) $club['safeguarding_name'], $semail,
+        make_token((int) $club['id'], 'officer', (string) $club['safeguarding_name'], $semail), array_map(fn($c) => $c['name'], $others), true);
+    $msg = $club['name'] . ': link sent to ' . $club['safeguarding_name'] . ' for ' . count($others) . ' coach(es) and the policy.';
+    if ($self && filter_var((string) $club['key_contact_detail'], FILTER_VALIDATE_EMAIL)) {
+        email_officer_link($club, 'second', (string) $club['key_contact_name'], (string) $club['key_contact_detail'],
+            make_token((int) $club['id'], 'second', (string) $club['key_contact_name'], (string) $club['key_contact_detail'], array_map(fn($c) => (int) $c['id'], $self)),
+            array_map(fn($c) => $c['name'], $self), true);
+        $msg .= ' The officer is also a coach, so ' . $club['key_contact_name'] . ' was sent a link to confirm that check.';
+    } elseif ($self) { $msg .= ' The officer is also a coach and there is no key contact email, so confirm that check by hand.'; }
+    audit($adminId, 'club_reverification_requested', $club['slug']);
+    return [true, $msg];
 }
