@@ -64,7 +64,7 @@ if ($path === '/login') {
         if (login((string) ($_POST['email'] ?? ''), (string) ($_POST['password'] ?? ''))) {
             $u = q('SELECT role, club_id FROM users WHERE id = ?', [$_SESSION['uid']])->fetch();
             $club = $u['club_id'] ? q('SELECT slug FROM clubs WHERE id = ?', [$u['club_id']])->fetch() : null;
-            redirect($u['role'] === 'admin' ? '/admin' : ($club ? '/club/' . $club['slug'] : '/'));
+            redirect($u['role'] === 'admin' ? '/admin' : ($u['role'] === 'coach' ? '/coach/availability' : ($club ? '/club/' . $club['slug'] : '/')));
         }
         flash('Email or password not recognised.', true);
         redirect('/login');
@@ -453,6 +453,66 @@ if ($path === '/calendar/renew' && $method === 'POST') {
     flash('New calendar link made. Add the new link to your calendar; the old one no longer works.');
     $ret = (string) ($_POST['return'] ?? '/'); redirect(preg_match('#^/[A-Za-z0-9/_?=&.-]*$#', $ret) && strpos($ret, '//') === false ? $ret : '/');
 }
+if ($path === '/coaches/manage' && $method === 'POST') {
+    $u = require_login(); csrf_check();
+    $club = q('SELECT * FROM clubs WHERE id = ?', [(int) ($_POST['club_id'] ?? 0)])->fetch();
+    if (!$club || !can_manage($u, $club)) { http_response_code(403); page('Not allowed', '<p>You cannot manage coaches at that club.</p>'); }
+    $back = '/club/' . $club['slug'] . '#coaches';
+    $act = (string) ($_POST['action'] ?? '');
+    $coachRow = null;
+    if ($act !== 'add') { $coachRow = q('SELECT * FROM coaches WHERE id = ? AND club_id = ?', [(int) ($_POST['coach_id'] ?? 0), $club['id']])->fetch(); if (!$coachRow) { flash('That coach was not found.', true); redirect($back); } }
+    if ($act === 'add' || $act === 'save') {
+        $name = trim((string) ($_POST['name'] ?? '')); $email = trim((string) ($_POST['email'] ?? '')); $pp = pence_from(trim((string) ($_POST['price'] ?? '')));
+        $q = (string) ($_POST['qual'] ?? ''); $qual = $q === 'Other' ? trim((string) ($_POST['qual_other'] ?? '')) : $q;
+        if ($name === '' || mb_strlen($name) > 160 || $pp === null || $pp <= 0 || $qual === '' || !in_array($q, QUALIFICATIONS, true) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            flash('Please give the coach a name, an hourly price, a qualification and a valid email address.', true); redirect($back);
+        }
+        $qual = mb_substr($qual, 0, 160);
+        if ($act === 'add') {
+            q('INSERT INTO coaches (club_id, name, hourly_price_pence, qualification, dbs_checked, is_safeguarding_officer, email) VALUES (?,?,?,?,?,?,?)', [$club['id'], $name, $pp, $qual, 0, 0, $email]);
+            audit((int) $u['id'], 'coach_added', $name . ' (' . $club['slug'] . ')');
+            [$made] = create_club_logins($club);
+            flash($name . ' was added with no DBS tick. ' . ($made ? 'A login set-up link was emailed to them. ' : '') . 'Use "Ask the safeguarding officer to confirm" so they can show a DBS tick.');
+        } else {
+            $renamed = $name !== $coachRow['name'];
+            q('UPDATE coaches SET name = ?, hourly_price_pence = ?, qualification = ?, email = ? WHERE id = ?', [$name, $pp, $qual, $email, $coachRow['id']]);
+            if ($renamed && $coachRow['dbs_checked']) {
+                q('UPDATE coaches SET dbs_checked = ?, dbs_checked_on = NULL, dbs_method = NULL, dbs_confirmed_by = NULL, dbs_enhanced = ? WHERE id = ?', [0, 0, $coachRow['id']]);
+            }
+            audit((int) $u['id'], 'coach_updated', $coachRow['name'] . ' -> ' . $name . ' (' . $club['slug'] . ')');
+            flash('Saved ' . $name . '.' . ($renamed && $coachRow['dbs_checked'] ? ' Because the name changed, the DBS tick was removed until the safeguarding officer confirms it again.' : ' New prices apply to bookings made from now on.'));
+        }
+        redirect($back);
+    }
+    if ($act === 'deactivate') {
+        $n = (int) q("SELECT COUNT(*) AS n FROM bookings WHERE coach_id = ? AND status IN ('pending_payment','confirmed') AND starts_at > ?", [$coachRow['id'], utc_string(new DateTimeImmutable('now', london()))])->fetch()['n'];
+        if ($n > 0) { flash($coachRow['name'] . ' still has ' . $n . ' upcoming booking(s). Cancel or release them first, then stop the coach.', true); redirect($back); }
+        q('UPDATE coaches SET active = ? WHERE id = ?', [0, $coachRow['id']]);
+        q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at > ?', [$coachRow['id'], utc_string(new DateTimeImmutable('now', london()))]);
+        audit((int) $u['id'], 'coach_deactivated', $coachRow['name'] . ' (' . $club['slug'] . ')');
+        flash($coachRow['name'] . ' no longer appears on the club page and cannot be booked.'); redirect($back);
+    }
+    if ($act === 'activate') {
+        q('UPDATE coaches SET active = ? WHERE id = ?', [1, $coachRow['id']]);
+        audit((int) $u['id'], 'coach_reactivated', $coachRow['name'] . ' (' . $club['slug'] . ')');
+        flash($coachRow['name'] . ' is back on the club page. Set their hours again on the Coach availability page.'); redirect($back);
+    }
+    if ($act === 'confirmlink') {
+        if ($coachRow['dbs_checked']) { flash($coachRow['name'] . ' already has a confirmed DBS check.', true); redirect($back); }
+        $sname = (string) $club['safeguarding_name']; $semail = (string) $club['safeguarding_contact'];
+        if (!filter_var($semail, FILTER_VALIDATE_EMAIL)) { flash('The club has no safeguarding officer email on record.', true); redirect($back); }
+        if ($coachRow['is_safeguarding_officer']) {
+            email_officer_link($club, 'second', (string) $club['key_contact_name'], (string) $club['key_contact_detail'], make_token((int) $club['id'], 'second', (string) $club['key_contact_name'], (string) $club['key_contact_detail'], [(int) $coachRow['id']]), [$coachRow['name']]);
+            flash('Because ' . $coachRow['name'] . ' is the safeguarding officer, the key contact was emailed a link to confirm the check.');
+        } else {
+            email_officer_link($club, 'officer', $sname, $semail, make_token((int) $club['id'], 'officer', $sname, $semail), [$coachRow['name']]);
+            flash('The safeguarding officer, ' . $sname . ', was emailed a private link to confirm ' . $coachRow['name'] . "'s DBS check.");
+        }
+        audit((int) $u['id'], 'coach_confirm_link_sent', $coachRow['name'] . ' (' . $club['slug'] . ')');
+        redirect($back);
+    }
+    redirect($back);
+}
 if ($path === '/coach/availability') {
     $u = require_login();
     if (!$u['club_id']) { http_response_code(403); page('Not allowed', '<p>This page is for club staff.</p>'); }
@@ -490,7 +550,8 @@ if ($path === '/coach/availability') {
     $nets = club_nets((int) $club['id']);
     apply_pattern($coach);
     $have = week_availability((int) $club['id'], $monday)[(int) $coach['id']] ?? [];
-    $b .= '<p class="muted">Tick the hours <strong>' . h($coach['name']) . '</strong> is available to coach. Only ticked hours can be booked by visitors.</p>'
+    $booked = week_coach_busy((int) $club['id'], $monday)[(int) $coach['id']] ?? [];
+    $wk = ''; $wk .= '<h2>Change a single week</h2><p class="muted">Tick the hours <strong>' . h($coach['name']) . '</strong> is available to coach. Only ticked hours can be booked by visitors.</p>'
         . '<p class="weeknav"><a href="/coach/availability?week=' . $monday->modify('-7 days')->format('Y-m-d') . ($manager ? '&coach=' . (int) $coach['id'] : '') . '">← Previous week</a> <strong>Week of ' . $monday->format('j M Y') . '</strong> <a href="/coach/availability?week=' . $monday->modify('+7 days')->format('Y-m-d') . ($manager ? '&coach=' . (int) $coach['id'] : '') . '">Next week →</a></p>';
     $minH = 24; $maxH = 0; $open = [];
     for ($i = 0; $i < 7; $i++) {
@@ -498,41 +559,59 @@ if ($path === '/coach/availability') {
         foreach ($nets as $n) { $hrs = hours_for((int) $n['id'], $d); if ($hrs) { $open[$i][] = $hrs; $minH = min($minH, $hrs[0]); $maxH = max($maxH, $hrs[1]); } }
     }
     $now = new DateTimeImmutable('now', london());
-    $b .= '<form method="post">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '">'
+    $wk .= '<form method="post">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '">'
         . '<div class="scroll"><table class="diary"><thead><tr><th></th>';
     for ($i = 0; $i < 7; $i++) { $b .= '<th>' . $monday->modify("+$i days")->format('D j') . '</th>'; }
-    $b .= '</tr></thead><tbody>';
+    $wk .= '</tr></thead><tbody>';
     for ($h = $minH; $h < $maxH; $h++) {
-        $b .= '<tr><th>' . sprintf('%02d:00', $h) . '</th>';
+        $wk .= '<tr><th>' . sprintf('%02d:00', $h) . '</th>';
         for ($i = 0; $i < 7; $i++) {
             $d = $monday->modify("+$i days"); $isOpen = false;
             foreach ($open[$i] as $hr) { if ($h >= $hr[0] && $h < $hr[1]) { $isOpen = true; } }
             if (!$isOpen || $d->setTime($h, 0) <= $now) { $b .= '<td class="closed">–</td>'; continue; }
             $key = $d->format('Y-m-d') . ' ' . sprintf('%02d', $h);
-            $b .= '<td class="' . (isset($have[$key]) ? 'free' : '') . '"><input type="checkbox" name="slot[]" value="' . $i . '-' . $h . '"' . (isset($have[$key]) ? ' checked' : '') . ' aria-label="' . h($d->format('D j') . ' ' . sprintf('%02d:00', $h)) . '"></td>';
+            if (isset($booked[$key])) { $wk .= '<td class="free booked">Booked<input type="checkbox" checked disabled aria-label="' . h($d->format('D j') . ' ' . sprintf('%02d:00', $h)) . ' booked"></td>'; continue; }
+            $wk .= '<td class="' . (isset($have[$key]) ? 'free' : '') . '"><input type="checkbox" name="slot[]" value="' . $i . '-' . $h . '"' . (isset($have[$key]) ? ' checked' : '') . ' aria-label="' . h($d->format('D j') . ' ' . sprintf('%02d:00', $h)) . '"></td>';
         }
-        $b .= '</tr>';
+        $wk .= '</tr>';
     }
-    $b .= '</tbody></table></div><label>Also use this pattern for the next <select name="repeat" class="inline"><option value="0">0 weeks (just this week)</option><option value="1">1 week</option><option value="3">3 weeks</option><option value="7">7 weeks</option><option value="11">11 weeks</option></select></label>'
+    $wk .= '</tbody></table></div><label>Also use this pattern for the next <select name="repeat" class="inline"><option value="0">0 weeks (just this week)</option><option value="1">1 week</option><option value="3">3 weeks</option><option value="7">7 weeks</option><option value="11">11 weeks</option></select></label>'
         . '<button type="submit">Save availability</button></form>';
-    $b .= '<form method="post" class="inlineform">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '"><input type="hidden" name="action" value="reset"><button type="submit" class="secondary">Put this week back to my standing pattern</button></form>';
+    $wk .= '<form method="post" class="inlineform">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '"><input type="hidden" name="action" value="reset"><button type="submit" class="secondary">Put this week back to my standing pattern</button></form>';
     // Standing weekly pattern: same weekday and hour every week, filled in automatically for the next weeks.
     $pat = []; foreach (coach_pattern((int) $coach['id']) as [$pd, $ph]) { $pat[$pd . '-' . $ph] = true; }
     $pmin = 24; $pmax = 0;
     foreach ($nets as $n) { foreach (q('SELECT weekday, MIN(open_hour) AS a, MAX(close_hour) AS z FROM opening_hours WHERE net_id = ? AND NOT is_closed GROUP BY weekday', [$n['id']])->fetchAll() as $r) { $pmin = min($pmin, (int) $r['a']); $pmax = max($pmax, (int) $r['z']); } }
     if ($pmin >= $pmax) { $pmin = 8; $pmax = 21; }
     $dn = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    $b .= '<h2>Standing weekly pattern</h2><p class="muted">Set your usual hours once, for example Tuesdays and Thursdays 5 to 8pm. They fill in automatically for each new week, and you can still change any single week above. We email you on Sundays if next week is empty.</p>'
+    $pt = ''; $pt .= '<h2>Standing weekly pattern</h2><p class="muted">Set your usual hours once, for example Tuesdays and Thursdays 5 to 8pm. They fill in automatically for each new week, and you can still change any single week above. We email you on Sundays if next week is empty.</p>'
         . '<form method="post">' . csrf_field() . '<input type="hidden" name="week" value="' . h($monday->format('Y-m-d')) . '"><input type="hidden" name="coach" value="' . (int) $coach['id'] . '"><input type="hidden" name="action" value="pattern">'
         . '<div class="scroll"><table class="diary"><thead><tr><th></th>';
     foreach ($dn as $d) { $b .= '<th>' . $d . '</th>'; }
-    $b .= '</tr></thead><tbody>';
+    $pt .= '</tr></thead><tbody>';
     for ($h = $pmin; $h < $pmax; $h++) {
-        $b .= '<tr><th>' . sprintf('%02d:00', $h) . '</th>';
+        $pt .= '<tr><th>' . sprintf('%02d:00', $h) . '</th>';
         for ($i = 0; $i < 7; $i++) { $k = $i . '-' . $h; $b .= '<td class="' . (isset($pat[$k]) ? 'free' : '') . '"><input type="checkbox" name="pat[]" value="' . $k . '"' . (isset($pat[$k]) ? ' checked' : '') . ' aria-label="' . $dn[$i] . ' ' . sprintf('%02d:00', $h) . '"></td>'; }
-        $b .= '</tr>';
+        $pt .= '</tr>';
     }
-    $b .= '</tbody></table></div><button type="submit">Save standing pattern</button></form>';
+    $pt .= '</tbody></table></div><button type="submit">Save standing pattern</button></form>';
+    // Welcome (first time), upcoming sessions, then the standing pattern (easiest way) before the single-week grid
+    $nowU = utc_string(new DateTimeImmutable('now', london()));
+    $hasAny = (int) q('SELECT COUNT(*) AS n FROM coach_availability WHERE coach_id = ? AND starts_at >= ?', [$coach['id'], $nowU])->fetch()['n'] > 0 || coach_pattern((int) $coach['id']);
+    $welcome = $hasAny ? '' : '<div class="notice"><strong>Welcome, ' . h($coach['name']) . '.</strong> Visitors cannot book you until you say when you are free. The quickest way: in <em>Standing weekly pattern</em> below, tick the hours you usually coach (for example Tuesdays and Thursdays 5 to 8pm) and press Save. It fills in the next ' . PATTERN_WEEKS . ' weeks, and you can change any single week afterwards.</div>';
+    $up = q("SELECT b.reference, b.starts_at, b.with_machine, b.is_junior, b.child_first_name, b.child_age, b.customer_name, n.name AS net_name FROM bookings b JOIN nets n ON n.id = b.net_id
+             WHERE b.coach_id = ? AND b.status = 'confirmed' AND b.starts_at >= ? ORDER BY b.starts_at LIMIT 15", [$coach['id'], $nowU])->fetchAll();
+    $upHtml = '<h2>My upcoming sessions</h2>';
+    if (!$up) { $upHtml .= '<p class="muted">No paid sessions booked yet.</p>'; }
+    else {
+        $upHtml .= '<ul class="plain slots">';
+        foreach ($up as $x) {
+            $upHtml .= '<li><strong>' . h(from_utc($x['starts_at'])->format('D j M, H:i')) . '</strong> · ' . h($x['net_name']) . ' · ' . h((string) $x['customer_name'])
+                . ($x['with_machine'] ? ' · bowling machine' : '') . ($x['is_junior'] ? ' · <strong>under-18: ' . h((string) $x['child_first_name']) . ', ' . (int) $x['child_age'] . '</strong>' : '') . '</li>';
+        }
+        $upHtml .= '</ul>';
+    }
+    $b .= $welcome . $upHtml . $pt . $wk;
     $b .= calendar_box('coach', (int) $coach['id'], csrf_field(), '/coach/availability?coach=' . (int) $coach['id']);
     page('Coach availability', $b);
 }
@@ -936,6 +1015,31 @@ if (preg_match('#^/club/([a-z0-9-]+)(/book|/release|/reserve)?$#', $path, $m)) {
         $b .= '<h2>Online payments</h2>' . ((int) $club['stripe_charges_enabled'] === 1 ? '' : '<div class="card">' . stripe_checklist_html() . '</div>') . '<form method="post" action="/stripe/connect" class="card row">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $club['id'] . '">'
             . '<span><strong>' . h($state) . '</strong><br><span class="muted">Customers pay the club directly through Stripe. Commission to PlayMoreCricket: ' . h(rtrim(rtrim((string) $club['commission_pct'], '0'), '.')) . '%.</span></span>'
             . ((int) $club['stripe_charges_enabled'] === 1 ? '' : '<button type="submit">' . (empty($club['stripe_account_id']) ? 'Set up payments' : 'Continue Stripe sign-up') . '</button>') . '</form>';
+    }
+    if ($manager) {
+        $qopts = function (string $cur): string {
+            $o = ''; foreach (QUALIFICATIONS as $qq) { if ($qq === '') { continue; } $o .= '<option value="' . h($qq) . '"' . ($qq === $cur ? ' selected' : '') . '>' . h($qq) . '</option>'; }
+            return $o;
+        };
+        $b .= '<h2 id="coaches">Manage coaches</h2><p class="muted">Changes to a price apply to bookings made from now on. Changing a coach\'s name removes their DBS tick until the safeguarding officer confirms it again.</p>';
+        foreach (q('SELECT * FROM coaches WHERE club_id = ? ORDER BY active DESC, name', [$club['id']])->fetchAll() as $mc) {
+            $isKnown = in_array((string) $mc['qualification'], QUALIFICATIONS, true);
+            $b .= '<form method="post" action="/coaches/manage" class="card">' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $club['id'] . '"><input type="hidden" name="coach_id" value="' . (int) $mc['id'] . '">'
+                . '<div class="row"><label>Name<input name="name" value="' . h($mc['name']) . '" required></label>'
+                . '<label>&pound; per hour<input name="price" inputmode="decimal" size="5" value="' . h(number_format($mc['hourly_price_pence'] / 100, 2, '.', '')) . '" required></label>'
+                . '<label>Qualification<select name="qual">' . $qopts($isKnown ? (string) $mc['qualification'] : 'Other') . '</select></label>'
+                . '<label>If other, which<input name="qual_other" maxlength="100" value="' . h($isKnown ? '' : (string) $mc['qualification']) . '"></label>'
+                . '<label>Email<input type="email" name="email" value="' . h((string) ($mc['email'] ?? '')) . '" required></label></div>'
+                . '<p class="muted">' . ($mc['active'] ? ($mc['dbs_checked'] ? '&#10003; DBS confirmed' : '<strong>No DBS tick yet</strong>') : '<strong>Not currently coaching</strong>') . '</p>'
+                . '<button type="submit" name="action" value="save">Save</button> '
+                . (!$mc['dbs_checked'] && $mc['active'] ? '<button type="submit" name="action" value="confirmlink" class="secondary">Ask the safeguarding officer to confirm</button> ' : '')
+                . ($mc['active'] ? '<button type="submit" name="action" value="deactivate" class="secondary">No longer coaching here</button>' : '<button type="submit" name="action" value="activate" class="secondary">Coaching here again</button>')
+                . '</form>';
+        }
+        $b .= '<form method="post" action="/coaches/manage" class="card"><strong>Add a coach</strong>' . csrf_field() . '<input type="hidden" name="club_id" value="' . (int) $club['id'] . '"><input type="hidden" name="action" value="add">'
+            . '<div class="row"><label>Name<input name="name" required></label><label>&pound; per hour<input name="price" inputmode="decimal" size="5" required></label>'
+            . '<label>Qualification<select name="qual">' . $qopts('') . '</select></label><label>If other, which<input name="qual_other" maxlength="100"></label>'
+            . '<label>Email<input type="email" name="email" required></label></div><button type="submit">Add coach</button></form>';
     }
     if ($manager) { $b .= calendar_box('club', (int) $club['id'], csrf_field(), '/club/' . $club['slug']); }
     page($club['name'], $b);

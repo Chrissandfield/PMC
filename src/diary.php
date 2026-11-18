@@ -266,8 +266,8 @@ function save_availability(array $coach, DateTimeImmutable $monday, array $selec
     try {
         for ($w = 0; $w <= $repeatWeeks; $w++) {
             $wk = $monday->modify('+' . (7 * $w) . ' days');
-            q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?',
-              [$coach['id'], utc_string($wk->setTime(0, 0)), utc_string($wk->modify('+7 days')->setTime(0, 0))]);
+            q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?' . BOOKED_HOURS_KEPT,   // hours with a live booking stay
+              [$coach['id'], utc_string($wk->setTime(0, 0)), utc_string($wk->modify('+7 days')->setTime(0, 0)), $coach['id']]);
             q('DELETE FROM coach_pattern_weeks WHERE coach_id = ? AND week_start = ?', [$coach['id'], $wk->format('Y-m-d')]);
             q('INSERT INTO coach_pattern_weeks (coach_id, week_start, source) VALUES (?,?,?)', [$coach['id'], $wk->format('Y-m-d'), 'manual']);
             foreach ($pattern as [$di, $h]) {
@@ -277,7 +277,9 @@ function save_availability(array $coach, DateTimeImmutable $monday, array $selec
                 $open = false;
                 foreach ($nets as $n) { $hrs = hours_for((int) $n['id'], $day); if ($hrs && $h >= $hrs[0] && $h < $hrs[1]) { $open = true; } }
                 if (!$open) { continue; }
-                q('INSERT INTO coach_availability (coach_id, starts_at) VALUES (?, ?)', [$coach['id'], utc_string($slot)]);
+                if (!q('SELECT 1 FROM coach_availability WHERE coach_id = ? AND starts_at = ?', [$coach['id'], utc_string($slot)])->fetch()) {
+                    q('INSERT INTO coach_availability (coach_id, starts_at) VALUES (?, ?)', [$coach['id'], utc_string($slot)]);
+                }
             }
         }
         $pdo->commit();
@@ -286,6 +288,8 @@ function save_availability(array $coach, DateTimeImmutable $monday, array $selec
 
 
 const PATTERN_WEEKS = 12;
+/** Appended to a DELETE on coach_availability: never remove an hour the coach has a live booking in. */
+const BOOKED_HOURS_KEPT = ' AND starts_at NOT IN (SELECT starts_at FROM bookings WHERE coach_id = ? AND status IN ' . LIVE . ')';
 
 /** Is this hour inside any of the club's net opening hours on that day? */
 function club_open_at(array $nets, DateTimeImmutable $day, int $h): bool
@@ -313,7 +317,7 @@ function save_pattern(array $coach, array $selected): void
         $thisWeek = $today->modify('-' . ((int) $today->format('N') - 1) . ' days');
         foreach (q('SELECT week_start FROM coach_pattern_weeks WHERE coach_id = ? AND source = ? AND week_start >= ?', [$coach['id'], 'pattern', $thisWeek->format('Y-m-d')])->fetchAll() as $r) {
             $wk = new DateTimeImmutable((string) $r['week_start'], london());
-            q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?', [$coach['id'], utc_string(max($wk->setTime(0, 0), new DateTimeImmutable('now', london()))), utc_string($wk->modify('+7 days')->setTime(0, 0))]);
+            q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?' . BOOKED_HOURS_KEPT, [$coach['id'], utc_string(max($wk->setTime(0, 0), new DateTimeImmutable('now', london()))), utc_string($wk->modify('+7 days')->setTime(0, 0)), $coach['id']]);
             q('DELETE FROM coach_pattern_weeks WHERE coach_id = ? AND week_start = ?', [$coach['id'], $wk->format('Y-m-d')]);
         }
         $pdo->commit();
@@ -354,7 +358,7 @@ function apply_patterns_for_club(int $clubId): void
 /** Put one week back to the coach's standing pattern (undo hand edits for that week). */
 function reset_week_to_pattern(array $coach, DateTimeImmutable $monday): void
 {
-    q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?', [$coach['id'], utc_string(max($monday->setTime(0, 0), new DateTimeImmutable('now', london()))), utc_string($monday->modify('+7 days')->setTime(0, 0))]);
+    q('DELETE FROM coach_availability WHERE coach_id = ? AND starts_at >= ? AND starts_at < ?' . BOOKED_HOURS_KEPT, [$coach['id'], utc_string(max($monday->setTime(0, 0), new DateTimeImmutable('now', london()))), utc_string($monday->modify('+7 days')->setTime(0, 0)), $coach['id']]);
     q('DELETE FROM coach_pattern_weeks WHERE coach_id = ? AND week_start = ?', [$coach['id'], $monday->format('Y-m-d')]);
     apply_pattern($coach);
 }

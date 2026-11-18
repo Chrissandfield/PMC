@@ -42,7 +42,7 @@ p=client(); s,h,_=req(p,'/set-password/'+t); ok(s==200 and 'Choose a password' i
 s,_,hd=req(p,'/set-password/'+t,{'csrf':csrf(h),'password':'short','password2':'short'}); ok(s==303,'short password bounced'); 
 s,h,_=req(p,'/set-password/'+t); s,_,_=req(p,'/set-password/'+t,{'csrf':csrf(h),'password':'longenough-pw-1','password2':'different-pw-12'}); ok(psql("select count(*) from password_tokens where used_at is not null")=='0','mismatch not accepted')
 s,h,_=req(p,'/set-password/'+t); s,_,hd=req(p,'/set-password/'+t,{'csrf':csrf(h),'password':'longenough-pw-1','password2':'longenough-pw-1'}); ok(s==303 and hd['Location']=='/login','password saved')
-c,loc=login('pat@coach.test','longenough-pw-1'); ok(loc is not None and loc.startswith('/club/login-vale-cc'),'coach can log in with the new password')
+c,loc=login('pat@coach.test','longenough-pw-1'); ok(loc is not None and loc=='/coach/availability','coach can log in with the new password')
 s,h,_=req(client(),'/set-password/'+t); ok(s==410,'link cannot be used twice')
 s,h,_=req(c,'/coach/availability'); ok(s==200 and 'Pat Coach' in h,'new coach sees their own availability page')
 # --- forgot password
